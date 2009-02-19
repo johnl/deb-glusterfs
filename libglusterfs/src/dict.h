@@ -38,7 +38,6 @@ typedef struct _data_pair data_pair_t;
 struct _data {
   unsigned char is_static:1;
   unsigned char is_const:1;
-  char is_locked:1;
   int32_t len;
   struct iovec *vec;
   char *data;
@@ -56,7 +55,6 @@ struct _data_pair {
 
 struct _dict {
   unsigned char is_static:1;
-  unsigned char is_locked:1;
   int32_t hash_size;
   int32_t count;
   int32_t refcount;
@@ -65,6 +63,7 @@ struct _dict {
   char *extra_free;
   gf_lock_t lock;
 };
+
 
 int32_t is_data_equal (data_t *one, data_t *two);
 void data_destroy (data_t *data);
@@ -75,7 +74,7 @@ void dict_del (dict_t *this, char *key);
 
 int32_t dict_serialized_length (dict_t *dict);
 int32_t dict_serialize (dict_t *dict, char *buf);
-dict_t *dict_unserialize (char *buf, int32_t size, dict_t **fill);
+int32_t dict_unserialize (char *buf, int32_t size, dict_t **fill);
 
 int32_t dict_iovec_len (dict_t *dict);
 int32_t dict_to_iovec (dict_t *dict, struct iovec *vec, int32_t count);
@@ -96,7 +95,6 @@ data_t *data_from_dynptr (void *value, int32_t len);
 data_t *bin_to_data (void *value, int32_t len);
 data_t *static_str_to_data (char *value);
 data_t *static_bin_to_data (void *value);
-data_t *data_from_iovec (struct iovec *vec, int32_t len);
 
 int64_t data_to_int64 (data_t *data);
 int32_t data_to_int32 (data_t *data);
@@ -138,5 +136,44 @@ void dict_foreach (dict_t *this,
 
 dict_t *dict_copy (dict_t *this,
 		   dict_t *new);
+
+/* CLEANED UP FUNCTIONS DECLARATIONS */
+GF_MUST_CHECK dict_t *dict_new (void);
+dict_t *dict_copy_with_ref (dict_t *this,
+			    dict_t *new);
+
+GF_MUST_CHECK int dict_get_int8 (dict_t *this, char *key, int8_t *val);
+GF_MUST_CHECK int dict_set_int8 (dict_t *this, char *key, int8_t val);
+
+GF_MUST_CHECK int dict_get_int16 (dict_t *this, char *key, int16_t *val);
+GF_MUST_CHECK int dict_set_int16 (dict_t *this, char *key, int16_t val);
+
+GF_MUST_CHECK int dict_get_int32 (dict_t *this, char *key, int32_t *val);
+GF_MUST_CHECK int dict_set_int32 (dict_t *this, char *key, int32_t val);
+
+GF_MUST_CHECK int dict_get_int64 (dict_t *this, char *key, int64_t *val);
+GF_MUST_CHECK int dict_set_int64 (dict_t *this, char *key, int64_t val);
+
+GF_MUST_CHECK int dict_get_uint16 (dict_t *this, char *key, uint16_t *val);
+GF_MUST_CHECK int dict_set_uint16 (dict_t *this, char *key, uint16_t val);
+
+GF_MUST_CHECK int dict_get_uint32 (dict_t *this, char *key, uint32_t *val);
+GF_MUST_CHECK int dict_set_uint32 (dict_t *this, char *key, uint32_t val);
+
+GF_MUST_CHECK int dict_get_uint64 (dict_t *this, char *key, uint64_t *val);
+GF_MUST_CHECK int dict_set_uint64 (dict_t *this, char *key, uint64_t val);
+
+GF_MUST_CHECK int dict_set_static_ptr (dict_t *this, char *key, void *ptr);
+GF_MUST_CHECK int dict_get_ptr (dict_t *this, char *key, void **ptr);
+GF_MUST_CHECK int dict_set_ptr (dict_t *this, char *key, void *ptr);
+GF_MUST_CHECK int dict_set_dynptr (dict_t *this, char *key, void *ptr, size_t size);
+
+GF_MUST_CHECK int dict_get_bin (dict_t *this, char *key, void **ptr);
+GF_MUST_CHECK int dict_set_bin (dict_t *this, char *key, void *ptr, size_t size);
+GF_MUST_CHECK int dict_set_static_bin (dict_t *this, char *key, void *ptr, size_t size);
+
+GF_MUST_CHECK int dict_set_str (dict_t *this, char *key, char *str);
+GF_MUST_CHECK int dict_set_dynstr (dict_t *this, char *key, char *str);
+GF_MUST_CHECK int dict_get_str (dict_t *this, char *key, char **str);
 
 #endif

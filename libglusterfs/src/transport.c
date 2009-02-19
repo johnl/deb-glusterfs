@@ -1,27 +1,27 @@
 /*
-   Copyright (c) 2006, 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
-   This file is part of GlusterFS.
+  Copyright (c) 2006, 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+  This file is part of GlusterFS.
 
-   GlusterFS is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published
-   by the Free Software Foundation; either version 3 of the License,
-   or (at your option) any later version.
+  GlusterFS is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published
+  by the Free Software Foundation; either version 3 of the License,
+  or (at your option) any later version.
 
-   GlusterFS is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
+  GlusterFS is distributed in the hope that it will be useful, but
+  WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  General Public License for more details.
 
-   You should have received a copy of the GNU General Public License
-   along with this program.  If not, see
-   <http://www.gnu.org/licenses/>.
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see
+  <http://www.gnu.org/licenses/>.
 */
 
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/poll.h>
-
+#include <fnmatch.h>
 #include <stdint.h>
 
 #ifndef _CONFIG_H
@@ -32,300 +32,308 @@
 #include "logging.h"
 #include "transport.h"
 #include "glusterfs.h"
+#include "xlator.h"
+#include "list.h"
+
 
 transport_t *
 transport_load (dict_t *options,
-		xlator_t *xl,
-		event_notify_fn_t notify)
+		xlator_t *xl)
 {
-  struct transport *trans = calloc (1, sizeof (struct transport));
-  data_t *type_data;
-  char *name = NULL;
-  void *handle = NULL;
-  char *type = "ERROR";
+	struct transport *trans = NULL, *return_trans = NULL;
+	char *addr_family = NULL;
+	char *name = NULL;
+	void *handle = NULL;
+	char *type = NULL;
+	char str[] = "ERROR";
+	int32_t ret = -1;
+	int8_t is_tcp = 0, is_unix = 0, is_ibsdp = 0;
+	volume_opt_list_t *vol_opt = NULL;
 
-  if (!options) {
-    freee (trans);
-    gf_log ("transport", GF_LOG_ERROR, "options is NULL");
-    return NULL;
-  }
-  if (!xl) {
-    freee (trans);
-    gf_log ("transport", GF_LOG_ERROR, "xl is NULL");
-    return NULL;
-  }
-  if (!notify) {
-    freee (trans);
-    gf_log ("transport", GF_LOG_ERROR, "notify is NULL");
-    return NULL;
-  }
+	GF_VALIDATE_OR_GOTO("transport", options, fail);
+	GF_VALIDATE_OR_GOTO("transport", xl, fail);
+  
+	trans = CALLOC (1, sizeof (struct transport));
+	GF_VALIDATE_OR_GOTO("transport", trans, fail);
 
-  type_data = dict_get (options, "transport-type"); // transport type, e.g., "tcp"
-  trans->xl = xl;
+	trans->xl = xl;
+	type = str;
 
-  trans->notify = notify;
+	/* Backward compatibility */
+	ret = dict_get_str (options, "transport-type", &type);
+	if (ret < 0) {
+		ret = dict_set_str (options, "transport-type", "socket");
+		if (ret < 0)
+			gf_log ("dict", GF_LOG_DEBUG,
+				"setting transport-type failed");
+		ret = dict_get_str (options, "transport.address-family",
+				    &addr_family);
+		if (ret < 0) {
+			ret = dict_get_str (options, "address-family",
+					    &addr_family);
+		}
 
+		if (ret < 0) {
+			ret = dict_set_str (options,
+					    "transport.address-family",
+					    "inet");
+			if (ret < 0) {
+				gf_log ("dict", GF_LOG_ERROR,
+					"setting address-family failed");
+			}
+		}
 
-  if (type_data) {
-    type = data_to_str (type_data);
-  } else {
-    freee (trans);
-    gf_log ("transport", GF_LOG_ERROR,
-	    "'option transport-type <xxxx/_____>' missing in specification");
-    return NULL;
-  }
+		gf_log ("transport", GF_LOG_WARNING,
+			"missing 'option transport-type'. defaulting to "
+			"\"socket\" (%s)", addr_family?addr_family:"inet");
+	} else {
+		{
+			/* Backword compatibility to handle * /client,
+			 * * /server. 
+			 */
+			char *tmp = strchr (type, '/');
+			if (tmp)
+				*tmp = '\0';
+		}
+		
+		is_tcp = strcmp (type, "tcp");
+		is_unix = strcmp (type, "unix");
+		is_ibsdp = strcmp (type, "ib-sdp");
+		if ((is_tcp == 0) ||
+		    (is_unix == 0) ||
+		    (is_ibsdp == 0)) {
+			if (is_tcp == 0)
+				ret = dict_set_str (options, 
+						    "transport.address-family",
+						    "inet");
+			if (is_unix == 0)
+				ret = dict_set_str (options, 
+						    "transport.address-family",
+						    "unix");
+			if (is_ibsdp == 0)
+				ret = dict_set_str (options, 
+						    "transport.address-family",
+						    "inet-sdp");
 
-  asprintf (&name, "%s/%s.so", TRANSPORTDIR, type);
-  gf_log ("transport", GF_LOG_DEBUG,
-	  "attempt to load file %s", name);
+			if (ret < 0)
+				gf_log ("dict", GF_LOG_DEBUG,
+					"setting address-family failed");
 
-  handle = dlopen (name, RTLD_NOW|RTLD_GLOBAL);
+			ret = dict_set_str (options, 
+					    "transport-type", "socket");
+			if (ret < 0)
+				gf_log ("dict", GF_LOG_DEBUG,
+					"setting transport-type failed");
+		}
+	}
 
-  if (!handle) {
-    gf_log ("transport", GF_LOG_ERROR,
-	    "dlopen (%s): %s", name, dlerror ());
-    freee (name);
-    freee (trans);
-    return NULL;
-  };
-  freee (name);
+	ret = dict_get_str (options, "transport-type", &type);
+	if (ret < 0) {
+		FREE (trans);
+		gf_log ("transport", GF_LOG_ERROR,
+			"'option transport-type <xx>' missing in volume '%s'",
+			xl->name);
+		goto fail;
+	}
 
-  if (!(trans->ops = dlsym (handle, "transport_ops"))) {
-    gf_log ("transport", GF_LOG_ERROR,
-	    "dlsym (transport_ops) on %s", dlerror ());
-    freee (trans);
-    return NULL;
-  }
+	asprintf (&name, "%s/%s.so", TRANSPORTDIR, type);
+	gf_log ("transport", GF_LOG_DEBUG,
+		"attempt to load file %s", name);
 
-  if (!(trans->init = dlsym (handle, "gf_transport_init"))) {
-    gf_log ("transport", GF_LOG_ERROR,
-	    "dlsym (gf_transport_init) on %s", dlerror ());
-    freee (trans);
-    return NULL;
-  }
+	handle = dlopen (name, RTLD_NOW|RTLD_GLOBAL);
+	if (handle == NULL) {
+		gf_log ("transport", GF_LOG_ERROR, "%s", dlerror ());
+		gf_log ("transport", GF_LOG_ERROR,
+			"volume '%s': transport-type '%s' is not valid or "
+			"not found on this machine", 
+			xl->name, type);
+		FREE (name);
+		FREE (trans);
+		goto fail;
+	}
+	FREE (name);
+	
+	trans->ops = dlsym (handle, "tops");
+	if (trans->ops == NULL) {
+		gf_log ("transport", GF_LOG_ERROR,
+			"dlsym (transport_ops) on %s", dlerror ());
+		FREE (trans);
+		goto fail;
+	}
 
-  if (!(trans->fini = dlsym (handle, "gf_transport_fini"))) {
-    gf_log ("transport", GF_LOG_ERROR,
-	    "dlsym (gf_transport_fini) on %s", dlerror ());
-    freee (trans);
-    return NULL;
-  }
+	trans->init = dlsym (handle, "init");
+	if (trans->init == NULL) {
+		gf_log ("transport", GF_LOG_ERROR,
+			"dlsym (gf_transport_init) on %s", dlerror ());
+		FREE (trans);
+		goto fail;
+	}
 
-  if (trans->init (trans, options, notify) != 0) {
-    gf_log ("transport", GF_LOG_ERROR,
-	    "'%s' initialization failed", type);
-    freee (trans);
-    return NULL;
-  }
+	trans->fini = dlsym (handle, "fini");
+	if (trans->fini == NULL) {
+		gf_log ("transport", GF_LOG_ERROR,
+			"dlsym (gf_transport_fini) on %s", dlerror ());
+		FREE (trans);
+		goto fail;
+	}
+	
+	vol_opt = CALLOC (1, sizeof (volume_opt_list_t));
+	vol_opt->given_opt = dlsym (handle, "options");
+	if (vol_opt->given_opt == NULL) {
+		gf_log ("transport", GF_LOG_DEBUG,
+			"volume option validation not specified");
+	} else {
+		list_add_tail (&vol_opt->list, &xl->volume_options);
+		if (-1 == 
+		    validate_xlator_volume_options (xl, 
+						    vol_opt->given_opt)) {
+			gf_log ("transport", GF_LOG_ERROR,
+				"volume option validation failed");
+			FREE (trans);
+			goto fail;
+		}
+	}
+	
+	ret = trans->init (trans);
+	if (ret != 0) {
+		gf_log ("transport", GF_LOG_ERROR,
+			"'%s' initialization failed", type);
+		FREE (trans);
+		goto fail;
+	}
 
-  pthread_mutex_init (&trans->lock, NULL);
-
-  return trans;
+	pthread_mutex_init (&trans->lock, NULL);
+	return_trans = trans;
+fail:
+	return return_trans;
 }
+
 
 int32_t 
-transport_notify (transport_t *this, int32_t event)
+transport_submit (transport_t *this, char *buf, int32_t len,
+		  struct iovec *vector, int count, dict_t *refs)
 {
-  if (!this)
-    return 0;
+	int32_t ret = -1;
 
-  int32_t ev = GF_EVENT_CHILD_UP;
-
-  if ((event & POLLIN) || (event & POLLPRI))
-    ev = GF_EVENT_POLLIN;
-  if ((event & POLLERR) || (event & POLLHUP))
-    ev = GF_EVENT_POLLERR;
-  return this->notify (this->xl, ev, this);
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+	GF_VALIDATE_OR_GOTO("transport", this->ops, fail);
+	
+	ret = this->ops->submit (this, buf, len, vector, count, refs);
+fail:
+	return ret;
 }
 
-int32_t 
-transport_submit (transport_t *this, char *buf, int32_t len)
-{
-  if (!this && !this->ops)
-    return 0;
-  return this->ops->submit (this, buf, len);
-}
-
-/*
-int32_t
-transport_flush (transport_t *this)
-{
-  return this->ops->flush (this);
-}
-*/
-
-int32_t
-transport_except (transport_t *this)
-{
-  if (!this && !this->ops)
-    return 0;
-  return this->ops->except (this);
-}
 
 int32_t 
 transport_connect (transport_t *this)
 {
-  if (!this && !this->ops)
-    return 0;
-  return this->ops->connect (this);
+	int ret = -1;
+	
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+  
+	ret = this->ops->connect (this);
+fail:
+	return ret;
 }
+
+
+int32_t
+transport_listen (transport_t *this)
+{
+	int ret = -1;
+	
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+  
+	ret = this->ops->listen (this);
+fail:
+	return ret;
+}
+
 
 int32_t 
 transport_disconnect (transport_t *this)
 {
-  if (!this && !this->ops)
-    return 0;
-  return this->ops->disconnect (this);
+	int32_t ret = -1;
+	
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+  
+	ret = this->ops->disconnect (this);
+fail:
+	return ret;
 }
 
-int32_t
-transport_bail (transport_t *this)
-{
-  if (!this && !this->ops)
-    return 0;
-  return this->ops->bail (this);
-}
 
 int32_t 
 transport_destroy (transport_t *this)
 {
-  if (!this)
-    return 0;
-  if (this->fini)
-    this->fini (this);
-  pthread_mutex_destroy (&this->lock);
-  freee (this);
+	int32_t ret = -1;
 
-  return 0;
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+  
+	if (this->fini)
+		this->fini (this);
+
+	pthread_mutex_destroy (&this->lock);
+	FREE (this);
+fail:
+	return ret;
 }
+
 
 transport_t *
 transport_ref (transport_t *this)
 {
-  if (!this)
-    return NULL;
+	transport_t *return_this = NULL;
 
-  pthread_mutex_lock (&this->lock);
-  this->refcount ++;
-  pthread_mutex_unlock (&this->lock);
-
-  return this;
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+	
+	pthread_mutex_lock (&this->lock);
+	{
+		this->refcount ++;
+	}
+	pthread_mutex_unlock (&this->lock);
+	
+	return_this = this;
+fail:
+	return return_this;
 }
 
-void
+
+int32_t
+transport_receive (transport_t *this, char **hdr_p, size_t *hdrlen_p,
+		   char **buf_p, size_t *buflen_p)
+{
+	int32_t ret = -1;
+
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+  
+	ret = this->ops->receive (this, hdr_p, hdrlen_p, buf_p, buflen_p);
+fail:
+	return ret;
+}
+
+
+int32_t
 transport_unref (transport_t *this)
 {
-  int32_t refcount;
-  if (!this)
-    return;
+	int32_t refcount = 0;
+	int32_t ret = -1;
 
-  pthread_mutex_lock (&this->lock);
-  refcount = --this->refcount;
-  pthread_mutex_unlock (&this->lock);
+	GF_VALIDATE_OR_GOTO("transport", this, fail);
+  
+	pthread_mutex_lock (&this->lock);
+	{
+		refcount = --this->refcount;
+	}
+	pthread_mutex_unlock (&this->lock);
 
-  if (!refcount) {
-    this->notify (this->xl, GF_EVENT_TRANSPORT_CLEANUP, this);
-    transport_destroy (this);
-  }
+	if (refcount == 0) {
+		this->xl->notify (this->xl, GF_EVENT_TRANSPORT_CLEANUP, this);
+		transport_destroy (this);
+	}
+	
+	ret = 0;
+fail:
+	return ret;
 }
 
-int32_t
-poll_register (glusterfs_ctx_t *ctx,
-	       int fd,
-	       void *data)
-{
-  int32_t ret = 0;
-
-  if (!ctx)
-    return 0;
-
-#ifdef HAVE_SYS_EPOLL_H
-
-  switch (ctx->poll_type)
-    {
-    case SYS_POLL_TYPE_EPOLL:
-      ret = sys_epoll_register (ctx, fd, data);
-      if (ret != -1 || errno != ENOSYS)
-	break;
-      ctx->poll_type = SYS_POLL_TYPE_POLL;
-
-    case SYS_POLL_TYPE_POLL:
-      ret = sys_poll_register (ctx, fd, data);
-      break;
-
-    default:
-      gf_log ("transport", GF_LOG_ERROR, "Invalid poll type");
-      break;
-    }
-#else
-  ret = sys_poll_register (ctx, fd, data);
-#endif
-  return ret;
-}
-
-int32_t
-poll_unregister (glusterfs_ctx_t *ctx,
-		 int fd)
-{
-  int32_t ret = 0;
-
-  if (!ctx)
-    return 0;
-
-#ifdef HAVE_SYS_EPOLL_H
-
-  switch (ctx->poll_type)
-    {
-    case SYS_POLL_TYPE_EPOLL:
-      ret = sys_epoll_unregister (ctx, fd);
-      if (ret != -1 || errno != ENOSYS)
-	break;
-      ctx->poll_type = SYS_POLL_TYPE_POLL;
-
-    case SYS_POLL_TYPE_POLL:
-      ret = sys_poll_unregister (ctx, fd);
-      break;
-
-    default:
-      gf_log ("transport", GF_LOG_ERROR, "Invalid poll type");
-    }
-#else
-  ret = sys_poll_unregister (ctx, fd);
-#endif
-
-  return ret;
-}
-
-int32_t
-poll_iteration (glusterfs_ctx_t *ctx)
-{
-  int32_t ret = 0;
-
-  if (!ctx)
-    return 0;
-
-#ifdef HAVE_SYS_EPOLL_H
-
-  switch (ctx->poll_type)
-    {
-    case SYS_POLL_TYPE_EPOLL:
-      ret = sys_epoll_iteration (ctx);
-      if (ret != -1 || errno != ENOSYS)
-	break;
-      ctx->poll_type = SYS_POLL_TYPE_POLL;
-
-    case SYS_POLL_TYPE_POLL:
-      ret = sys_poll_iteration (ctx);
-      break;
-
-    default:
-      gf_log ("transport", GF_LOG_ERROR, "Invalid poll type");
-
-      break;
-    }
-#else
-  ret = sys_poll_iteration (ctx);
-#endif
-
-  return ret;
-}

@@ -25,6 +25,8 @@
 #include "config.h"
 #endif
 
+
+#include "compat-errno.h"
 #include "glusterfs.h"
 #include "logging.h"
 #include "dict.h"
@@ -77,19 +79,15 @@ struct iot_file {
 
 struct iot_conf {
   int32_t thread_count;
-  /*
-    int32_t queue_limit;
-  */
+  int32_t misc_thread_index;  /* Used to schedule the miscellaneous calls like checksum */
   struct iot_worker workers;
   struct iot_file files;
   pthread_mutex_t files_lock;
 
-  off_t cache_size;
+  uint64_t cache_size;
   off_t current_size;
   pthread_cond_t q_cond;
   pthread_mutex_t lock;
-
-  int32_t misc_thread_index; /* Used to schedule the miscellaneous calls like checksum etc */
 };
 
 typedef struct iot_file iot_file_t;

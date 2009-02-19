@@ -1,9 +1,13 @@
 
-docdir = $(datadir)/doc/$(PACKAGE_NAME)
-EmacsModedir = $(docdir)/examples
+docdir = $(datadir)/doc/glusterfs/
+EmacsModedir = $(docdir)/
 EmacsMode_DATA = glusterfs-mode.el
 
+SUBDIRS = init.d benchmarking
 
-SUBDIRS = init.d
+EXTRA_DIST = specgen.scm glusterfs.vim glusterfs-mode.el Portfile \
+	     test/Makefile.am test/Makefile.in test/rdd.c \
+	     benchmarking/Makefile.am benchmarking/Makefile.in
 
-EXTRA_DIST = specgen.scm glusterfs.vim glusterfs-mode.el
+CLEANFILES = 
+

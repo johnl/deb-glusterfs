@@ -17,14 +17,17 @@
    <http://www.gnu.org/licenses/>.
 */
 
+
 %x STRING
+%option prefix="yy"
+%option yylineno
 %{
 
 #define YYSTYPE char *
 #include "xlator.h"
 #include "y.tab.h"
 #include <string.h>
-#define START_STRSIZE	16
+#define START_STRSIZE	32
 
 static char *text;
 static int text_asize;
@@ -66,6 +69,7 @@ END    [e][n][d]
 SUB    [s][u][b]
 OPTION [o][p][t][i][o][n]
 TYPE   [t][y][p][e]
+%x BKQUOTE
 %%
 \#.*                   ;
 {VOLUME}               return SECTION_BEGIN;
@@ -83,6 +87,20 @@ TYPE   [t][y][p][e]
                        return STRING_TOK;
        }
 }
-[^ \t\r\n\"\\]+   { yylval = strdup (yytext) ; return ID; }
-[ \t\r\n]+               ;
+\`                     BEGIN(BKQUOTE);
+<BKQUOTE>{
+       [^\n\`\\]* {    append_string (yytext, yyleng); }
+       \\.        {    append_string (yytext + 1, yyleng - 1); }
+       \`         {
+                       BEGIN (INITIAL);
+                       yylval = text;
+                       return CMD_TOK;
+
+                       /* ugly  trick to fix warnings */
+                       if (0) unput (0);
+                       if (0) input();
+       }
+}
+[^ \t\r\n\`\"\\]+ {    yylval = strdup (yytext) ; return ID; }
+[ \t\r\n]+             ;
 %%

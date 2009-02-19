@@ -28,7 +28,11 @@
 #include <stdlib.h>
 #include <fuse/fuse_lowlevel.h>
 
+#define GLUSTERFS_XATTR_LEN_MAX  65536
+
 uint64_t req_callid (fuse_req_t req);
+
+size_t fuse_dirent_size (size_t dname_len);
 
 int32_t
 fuse_reply_vec (fuse_req_t req,

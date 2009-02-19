@@ -25,108 +25,23 @@
 #include "config.h"
 #endif
 
-#ifndef HAVE_ARGP
-#include <stdio.h>
-#include <errno.h>
+#include <stdint.h>
+#include "dict.h"
 
-#define ARGP_ERR_UNKNOWN E2BIG
+#ifndef LLONG_MAX
+#define LLONG_MAX LONG_LONG_MAX /* compat with old gcc */
+#endif /* LLONG_MAX */
 
-#define ARGP_KEY_ARG 		0
-#define ARGP_KEY_NO_ARGS        0x1000002 /* ??? */
-#define ARGP_HELP_USAGE         0x01 /* a Usage: message. (???) */
-
-typedef int error_t;
-
-struct argp;
-struct argp_state;
-struct argp_child;
-
-struct argp_option {
-  const char *name;
-  int key;
-  const char *arg;
-  int flags;
-  const char *doc;
-  int group;
-};
-
-typedef int (*argp_parser_t) (int key, char *arg,
-			      struct argp_state *state);
-
-struct argp_child
-{
-  /* The child parser.  */
-  __const struct argp *argp;
-
-  /* Flags for this child.  */
-  int flags;
-
-  /* If non-zero, an optional header to be printed in help output before the
-     child options.  As a side-effect, a non-zero value forces the child
-     options to be grouped together; to achieve this effect without actually
-     printing a header string, use a value of "".  */
-  __const char *header;
-
-  /* Where to group the child options relative to the other (`consolidated')
-     options in the parent argp; the values are the same as the GROUP field
-     in argp_option structs, but all child-groupings follow parent options at
-     a particular group level.  If both this field and HEADER are zero, then
-     they aren't grouped at all, but rather merged with the parent options
-     (merging the child's grouping levels with the parents).  */
-  int group;
-};
-
-struct argp_state
-{
-  const struct argp *root_argp;
-
-  int argc;
-  char **argv;
-  int next;
-  unsigned flags;
-  unsigned arg_num;
-  int quoted;
-
-  void *input;
-  void **child_inputs;
-  void *hook;
-  char *name;
-
-  FILE *err_stream;
-  FILE *out_stream;
-
-  void *pstate;
-};
-
-struct argp
-{
-  const struct argp_option *options;
-  argp_parser_t parser;
-  const char *args_doc;
-  const char *doc;
-  const struct argp_child *children;
-  char *(*help_filter) (int __key, __const char *__text, void *__input);
-  const char *argp_domain;
-};
-
-#define argp_parse argp_parse_
-int argp_parse_ (const struct argp * __argp,
-		 int __argc, char **  __argv,
-		 unsigned __flags, int * __arg_index,
-		 void * __input);
-
-void argp_help (const struct argp *argp, FILE *stream, 
-		unsigned flags, char *name);
- 
-
-#else
-#include <argp.h>
-#endif /* HAVE_ARGP */
 
 #ifdef GF_LINUX_HOST_OS
 
+#define UNIX_PATH_MAX 108
+
+#include <sys/un.h>
 #include <linux/limits.h>
 #include <sys/xattr.h>
+#include <endian.h>
+
 
 #ifndef HAVE_LLISTXATTR
 
@@ -145,73 +60,297 @@ void argp_help (const struct argp *argp, FILE *stream,
 #ifdef GF_BSD_HOST_OS 
 /* In case of FreeBSD */
 
+#define UNIX_PATH_MAX 104
+#include <sys/types.h>
+
+#include <sys/un.h>
+#include <sys/endian.h>
 #include <sys/extattr.h>
 #include <limits.h>
 
-#ifndef ENODATA
-#define ENODATA ENOMSG
-#endif
+#include <libgen.h>
+
+enum {
+        ATTR_CREATE = 1,
+#define XATTR_CREATE ATTR_CREATE
+        ATTR_REPLACE = 2
+#define XATTR_REPLACE ATTR_REPLACE
+};
+
 
 #ifndef sighandler_t
 #define sighandler_t sig_t
 #endif
 
-#define lremovexattr(path,key) extattr_delete_link(path, EXTATTR_NAMESPACE_USER, key)
-#define llistxattr(path,key,size)  extattr_list_link(path, EXTATTR_NAMESPACE_USER, key, size)
-#define lgetxattr(path, key, value, size) extattr_get_link(path, EXTATTR_NAMESPACE_USER, key, value, size)
-#define lsetxattr(path,key,value,size,flags) extattr_set_link(path, EXTATTR_NAMESPACE_USER, key, value, size)
+#ifndef ino64_t
+#define ino64_t ino_t
+#endif
 
-#define F_GETLK64	F_GETLK
-#define F_SETLK64	F_SETLK
-#define F_SETLKW64	F_SETLKW
+#ifndef EUCLEAN
+#define EUCLEAN 0
+#endif 
+
+#include <netinet/in.h>
+#ifndef s6_addr16
+#define s6_addr16 __u6_addr.__u6_addr16
+#endif
+#ifndef s6_addr32
+#define s6_addr32 __u6_addr.__u6_addr32
+#endif 
+
+/* Posix dictates NAME_MAX to be used */
+# ifndef NAME_MAX
+#  ifdef  MAXNAMLEN
+#   define NAME_MAX MAXNAMLEN
+#  else
+#   define NAME_MAX 255
+#  endif
+# endif
+        
+#define lremovexattr(path,key)               extattr_delete_link(path, EXTATTR_NAMESPACE_USER, key)
+#define llistxattr(path,key,size)            extattr_list_link(path, EXTATTR_NAMESPACE_USER, key, size)
+#define lgetxattr(path, key, value, size)    extattr_get_link(path, EXTATTR_NAMESPACE_USER, key, value, size)
+#define lsetxattr(path,key,value,size,flags) extattr_set_link(path, EXTATTR_NAMESPACE_USER, key, value, size)
+#define fgetxattr(fd,key,value,size)         extattr_get_fd(fd, EXTATTR_NAMESPACE_USER, key, value, size)
+#define fsetxattr(fd,key,value,size,flag)    extattr_set_fd(fd, EXTATTR_NAMESPACE_USER, key, value, size)
+
+
+#define F_GETLK64       F_GETLK
+#define F_SETLK64       F_SETLK
+#define F_SETLKW64      F_SETLKW
 
 #endif /* GF_BSD_HOST_OS */
 
 #ifdef GF_DARWIN_HOST_OS
 
+#define UNIX_PATH_MAX 104
+#include <sys/types.h>
+
+#include <sys/un.h>
+#include <machine/endian.h>
 #include <sys/xattr.h>
 #include <limits.h>
 
+#include <libgen.h>
+
+
+#if __DARWIN_64_BIT_INO_T == 0
+#    error '64 bit ino_t is must for GlusterFS to work, Compile with "CFLAGS=-D__DARWIN_64_BIT_INO_T"'
+#endif /* __DARWIN_64_BIT_INO_T */
+
+
+#if __DARWIN_64_BIT_INO_T == 0
+#    error '64 bit ino_t is must for GlusterFS to work, Compile with "CFLAGS=-D__DARWIN_64_BIT_INO_T"'
+#endif /* __DARWIN_64_BIT_INO_T */
 
 #ifndef sighandler_t
 #define sighandler_t sig_t
 #endif
 
-#define llistxattr(path,key,size)               listxattr(path,key,size,0)
-#define lgetxattr(path,key,value,size)          getxattr(path,key,value,size,0,0)
-#define lsetxattr(path,key,value,size,flags)    setxattr(path,key,value,size,flags,0)
-#define lremovexattr(path,key)                  removexattr(path,key,0)
-#define fgetxattr(path,key,value,size)		fgetxattr(path,key,value,size,0,0)
+#ifndef EUCLEAN
+#define EUCLEAN 0
+#endif
 
-#define F_GETLK64	F_GETLK
-#define F_SETLK64	F_SETLK
-#define F_SETLKW64	F_SETLKW
+#include <netinet/in.h>
+#ifndef s6_addr16
+#define s6_addr16 __u6_addr.__u6_addr16
+#endif 
+#ifndef s6_addr32
+#define s6_addr32 __u6_addr.__u6_addr32
+#endif 
+
+/* Posix dictates NAME_MAX to be used */
+# ifndef NAME_MAX
+#  ifdef  MAXNAMLEN
+#   define NAME_MAX MAXNAMLEN
+#  else
+#   define NAME_MAX 255
+#  endif
+# endif
+
+#define llistxattr(path,key,size)               listxattr(path,key,size,XATTR_NOFOLLOW)
+#define lgetxattr(path,key,value,size)          getxattr(path,key,value,size,0,XATTR_NOFOLLOW)
+#define lsetxattr(path,key,value,size,flags)    setxattr(path,key,value,size,0,flags|XATTR_NOFOLLOW)
+#define lremovexattr(path,key)                  removexattr(path,key,XATTR_NOFOLLOW)
+#define fgetxattr(path,key,value,size)          fgetxattr(path,key,value,size,0,0)
+#define fsetxattr(path,key,value,size,flag)     fsetxattr(path,key,value,size,0,flag)
+
+#define F_GETLK64       F_GETLK
+#define F_SETLK64       F_SETLK
+#define F_SETLKW64      F_SETLKW
+
+int32_t gf_darwin_compat_listxattr (int len, dict_t *dict, int size);
+int32_t gf_darwin_compat_getxattr (const char *key, dict_t *dict);
+int32_t gf_darwin_compat_setxattr (dict_t *dict);
 
 #endif /* GF_DARWIN_HOST_OS */
 
 #ifdef GF_SOLARIS_HOST_OS
 
+#define UNIX_PATH_MAX 108
+#define EUCLEAN 117 
+
+#include <sys/un.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <sys/fcntl.h>
+#include <libgen.h>
+#include <sys/mkdev.h>
+
+#ifndef lchmod
+#define lchmod chmod
+#endif 
+
+enum {
+        ATTR_CREATE = 1,
+#define XATTR_CREATE ATTR_CREATE
+        ATTR_REPLACE = 2
+#define XATTR_REPLACE ATTR_REPLACE
+};
 
 /* This patch is not present in Solaris 10 and before */
 #ifndef dirfd
 #define dirfd(dirp)   ((dirp)->dd_fd)
 #endif
 
+/* Posix dictates NAME_MAX to be used */
+# ifndef NAME_MAX
+#  ifdef  MAXNAMLEN
+#   define NAME_MAX MAXNAMLEN
+#  else 
+#   define NAME_MAX 255
+#  endif
+# endif 
+
+#include <netinet/in.h>
+#ifndef s6_addr16
+#define S6_ADDR16(x)    ((uint16_t*) ((char*)&(x).s6_addr))
+#endif
+#ifndef s6_addr32
+#define s6_addr32       _S6_un._S6_u32
+#endif
+
 #define lremovexattr(path,key)               solaris_removexattr(path,key)
 #define llistxattr(path,key,size)            solaris_listxattr(path,key,size)
 #define lgetxattr(path,key,value,size)       solaris_getxattr(path,key,value,size)
 #define lsetxattr(path,key,value,size,flags) solaris_setxattr(path,key,value,size,flags)
+#define fgetxattr(fd,key,value,size)         solaris_fgetxattr(fd,key,value,size)
+#define fsetxattr(fd,key,value,size,flags)   solaris_fsetxattr(fd,key,value,size,flags)
 #define lutimes(filename,times)              utimes(filename,times)
 
 int asprintf(char **string_ptr, const char *format, ...); 
+char* strsep(char** str, const char* delims);
 int solaris_listxattr(const char *path, char *list, size_t size);
 int solaris_removexattr(const char *path, const char* key);
 int solaris_getxattr(const char *path, const char* key, 
-		     char *value, size_t size);
+                     char *value, size_t size);
 int solaris_setxattr(const char *path, const char* key, const char *value, 
-		     size_t size, int flags);
+                     size_t size, int flags);
+int solaris_fgetxattr(int fd, const char* key,
+                      char *value, size_t size);
+int solaris_fsetxattr(int fd, const char* key, const char *value, 
+                      size_t size, int flags);
 
 #endif /* GF_SOLARIS_HOST_OS */
+
+#ifndef HAVE_ARGP
+#include "argp.h"
+#else
+#include <argp.h>
+#endif /* HAVE_ARGP */
+
+#ifndef HAVE_STRNLEN
+size_t strnlen(const char *string, size_t maxlen);                   
+#endif /* STRNLEN */
+
+#ifndef strdupa
+#define strdupa(s)                                                      \
+        (__extension__                                                  \
+         ({                                                             \
+                 __const char *__old = (s);                             \
+                 size_t __len = strlen (__old) + 1;                     \
+                 char *__new = (char *) __builtin_alloca (__len);       \
+                 (char *) memcpy (__new, __old, __len);                 \
+         }))
+#endif 
+
+#define ALIGN(x) (((x) + sizeof (uint64_t) - 1) & ~(sizeof (uint64_t) - 1))
+
+#include <sys/types.h>
+#include <dirent.h>
+
+static inline int32_t
+dirent_size (struct dirent *entry)
+{
+#ifdef GF_BSD_HOST_OS
+        return ALIGN (24 /* FIX MEEEE!!! */ + entry->d_namlen);
+#endif
+#ifdef GF_DARWIN_HOST_OS
+        return ALIGN (24 /* FIX MEEEE!!! */ + entry->d_namlen);
+#endif
+#ifdef GF_LINUX_HOST_OS
+        return ALIGN (24 /* FIX MEEEE!!! */ + entry->d_reclen);
+#endif
+#ifdef GF_SOLARIS_HOST_OS
+        return ALIGN (24 /* FIX MEEEE!!! */ + entry->d_reclen);
+#endif
+}
+
+
+static inline int32_t
+gf_compat_getxattr (const char *key, dict_t *dict)
+{
+#ifdef GF_DARWIN_HOST_OS
+  return gf_darwin_compat_getxattr (key, dict);
+#endif
+  return -1;
+}
+
+
+static inline int32_t
+gf_compat_setxattr (dict_t *dict)
+{
+#ifdef GF_DARWIN_HOST_OS
+  return gf_darwin_compat_setxattr (dict);
+#endif
+  return -1;
+}
+
+
+static inline int32_t
+gf_compat_listxattr (int len, dict_t *dict, int size)
+{
+#ifdef GF_DARWIN_HOST_OS
+  return gf_darwin_compat_listxattr (len, dict, size);
+#endif
+  return len;
+}
+
+
+#ifdef HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC
+/* Linux, Solaris, Cygwin */
+#define ST_ATIM_NSEC(stbuf) ((stbuf)->st_atim.tv_nsec)
+#define ST_CTIM_NSEC(stbuf) ((stbuf)->st_ctim.tv_nsec)
+#define ST_MTIM_NSEC(stbuf) ((stbuf)->st_mtim.tv_nsec)
+#define ST_ATIM_NSEC_SET(stbuf, val) ((stbuf)->st_atim.tv_nsec = (val))
+#define ST_MTIM_NSEC_SET(stbuf, val) ((stbuf)->st_mtim.tv_nsec = (val))
+#define ST_CTIM_NSEC_SET(stbuf, val) ((stbuf)->st_ctim.tv_nsec = (val))
+#elif defined(HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC)
+/* FreeBSD, NetBSD */
+#define ST_ATIM_NSEC(stbuf) ((stbuf)->st_atimespec.tv_nsec)
+#define ST_CTIM_NSEC(stbuf) ((stbuf)->st_ctimespec.tv_nsec)
+#define ST_MTIM_NSEC(stbuf) ((stbuf)->st_mtimespec.tv_nsec)
+#define ST_ATIM_NSEC_SET(stbuf, val) ((stbuf)->st_atimespec.tv_nsec = (val))
+#define ST_MTIM_NSEC_SET(stbuf, val) ((stbuf)->st_mtimespec.tv_nsec = (val))
+#define ST_CTIM_NSEC_SET(stbuf, val) ((stbuf)->st_ctimespec.tv_nsec = (val))
+#else
+#define ST_ATIM_NSEC(stbuf) (0)
+#define ST_CTIM_NSEC(stbuf) (0)
+#define ST_MTIM_NSEC(stbuf) (0)
+#define ST_ATIM_NSEC_SET(stbuf, val) do { } while (0);
+#define ST_MTIM_NSEC_SET(stbuf, val) do { } while (0);
+#define ST_CTIM_NSEC_SET(stbuf, val) do { } while (0);
+#endif
 
 #endif /* __COMPAT_H__ */
