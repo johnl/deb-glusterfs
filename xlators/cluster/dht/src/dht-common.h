@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+   Copyright (c) 2008, 2009 Z RESEARCH, Inc. <http://www.zresearch.com>
    This file is part of GlusterFS.
 
    GlusterFS is free software; you can redistribute it and/or modify
@@ -55,11 +55,13 @@ struct dht_local {
 	loc_t                    loc2;
 	int                      op_ret;
 	int                      op_errno;
+	int                      layout_mismatch;
 	struct stat              stbuf;
 	struct statvfs           statvfs;
 	fd_t                    *fd;
 	inode_t                 *inode;
 	dict_t                  *xattr;
+	dict_t                  *xattr_req;
 	dht_layout_t            *layout;
 	size_t                   size;
 	ino_t                    st_ino;
@@ -103,7 +105,7 @@ struct dht_conf {
 	dht_layout_t **file_layouts;
 	dht_layout_t **dir_layouts;
 	dht_layout_t  *default_dir_layout;
-	int            search_unhashed;
+	gf_boolean_t   search_unhashed;
 	int            gen;
 };
 typedef struct dht_conf dht_conf_t;
@@ -123,7 +125,7 @@ typedef struct dht_disk_layout dht_disk_layout_t;
 
 #define is_fs_root(loc) (strcmp (loc->path, "/") == 0)
 
-#define is_revalidate(loc) (dict_get (loc->inode->ctx, this->name) != NULL)
+#define is_revalidate(loc) (inode_ctx_get (loc->inode, this, NULL) == 0)
 
 #define is_last_call(cnt) (cnt == 0)
 
@@ -160,6 +162,8 @@ int dht_layout_anomalies (xlator_t *this, loc_t *loc, dht_layout_t *layout,
 			  uint32_t *holes_p, uint32_t *overlaps_p,
 			  uint32_t *missing_p, uint32_t *down_p,
 			  uint32_t *misc_p);
+int dht_layout_dir_mismatch (xlator_t *this, dht_layout_t *layout,
+			     xlator_t *subvol, loc_t *loc, dict_t *xattr);
 
 xlator_t *dht_linkfile_subvol (xlator_t *this, inode_t *inode,
 			       struct stat *buf, dict_t *xattr);
@@ -202,9 +206,6 @@ dht_selfheal_directory (call_frame_t *frame, dht_selfheal_dir_cbk_t cbk,
 int
 dht_selfheal_restore (call_frame_t *frame, dht_selfheal_dir_cbk_t cbk,
 		      loc_t *loc, dht_layout_t *layout);
-
-int inode_ctx_set (inode_t *inode, xlator_t *this, void *ctx);
-int inode_ctx_get (inode_t *inode, xlator_t *this, void **ctx);
 
 int dht_rename (call_frame_t *frame, xlator_t *this,
 		loc_t *oldloc, loc_t *newloc);

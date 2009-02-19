@@ -34,7 +34,7 @@
 					; "stroage/posix"
 					; "encryption/rot-13"
 					; "debug/trace"
-    '("\\<\\(cluster/\\(unify\\|afr\\|stripe\\|ha\\|dht\\)\\|\\performance/\\(io-\\(cache\\|threads\\)\\|write-behind\\|read-ahead\\|symlink-cache\\)\\|protocol/\\(server\\|client\\)\\|features/\\(trash\\|posix-locks\\|locks\\|path-converter\\|filter\\)\\|storage/\\(posix\\|bdb\\)\\|encryption/rot-13\\|debug/trace\\)\\>" . font-lock-keyword-face))
+    '("\\<\\(cluster/\\(unify\\|afr\\|replicate\\|stripe\\|ha\\|dht\\|distribute\\)\\|\\performance/\\(io-\\(cache\\|threads\\)\\|write-behind\\|read-ahead\\|symlink-cache\\)\\|protocol/\\(server\\|client\\)\\|features/\\(trash\\|posix-locks\\|locks\\|path-converter\\|filter\\)\\|storage/\\(posix\\|bdb\\)\\|encryption/rot-13\\|debug/trace\\)\\>" . font-lock-keyword-face))
 "Additional Keywords to highlight in GlusterFS mode.")
 
 (defconst glusterfs-font-lock-keywords-2
@@ -44,7 +44,7 @@
       ; "auth.addr" "block-size" "remote-port" "listen-port" "transport-type"
       ; "limits.min-free-disk" "directory"
 	; TODO: add all the keys here.
-	   '("\\<\\(inode-lru-limit\\|replicate\\|namespace\\|scheduler\\|username\\|password\\|allow\\|reject\\|block-size\\|listen-port\\|transport-type\\|directory\\|page-size\\|page-count\\|aggregate-size\\|non-blocking-io\\|client-volume-filename\\|bind-address\\|self-heal\\|read-only-subvolumes\\|read-subvolume\\|thread-count\\|cache-size\\|window-size\\|force-revalidate-timeout\\|priority\\|include\\|exclude\\|remote-\\(host\\|subvolume\\|port\\)\\|auth.\\(addr\\|login\\)\\|limits.\\(min-disk-free\\|transaction-size\\|ib-verbs-\\(work-request-\\(send-\\|recv-\\(count\\|size\\)\\)\\|port\\|mtu\\|device-name\\)\\)\\)\ \\>" . font-lock-constant-face)))
+	   '("\\<\\(inode-lru-limit\\|replicate\\|namespace\\|scheduler\\|username\\|password\\|allow\\|reject\\|block-size\\|listen-port\\|transport-type\\|transport-timeout\\|directory\\|page-size\\|page-count\\|aggregate-size\\|non-blocking-io\\|client-volume-filename\\|bind-address\\|self-heal\\|read-only-subvolumes\\|read-subvolume\\|thread-count\\|cache-size\\|window-size\\|force-revalidate-timeout\\|priority\\|include\\|exclude\\|remote-\\(host\\|subvolume\\|port\\)\\|auth.\\(addr\\|login\\)\\|limits.\\(min-disk-free\\|transaction-size\\|ib-verbs-\\(work-request-\\(send-\\|recv-\\(count\\|size\\)\\)\\|port\\|mtu\\|device-name\\)\\)\\)\ \\>" . font-lock-constant-face)))
   "option keys in GlusterFS mode.")
 
 (defconst glusterfs-font-lock-keywords-3

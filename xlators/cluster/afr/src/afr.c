@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+   Copyright (c) 2007, 2008, 2009 Z RESEARCH, Inc. <http://www.zresearch.com>
    This file is part of GlusterFS.
 
    GlusterFS is free software; you can redistribute it and/or modify
@@ -138,6 +138,9 @@ afr_local_cleanup (afr_local_t *local, xlator_t *this)
 
 	if (local->fd)
 		fd_unref (local->fd);
+	
+	if (local->xattr_req)
+		dict_unref (local->xattr_req);
 
 	FREE (local->child_up);
 
@@ -306,15 +309,14 @@ afr_self_heal_cbk (call_frame_t *frame, xlator_t *this)
 	local = frame->local;
 
 	if (local->govinda_gOvinda) {
-		ret = dict_set_str (local->cont.lookup.inode->ctx,
-				    this->name, "govinda");
+		ret = inode_ctx_put (local->cont.lookup.inode, this, 1);
+
 		if (ret < 0) {
 			local->op_ret   = -1;
 			local->op_errno = -ret;
 		}
 	} else {
-		dict_del (local->cont.lookup.inode->ctx,
-			  this->name);
+		inode_ctx_del (local->cont.lookup.inode, this, NULL);
 	}
 
 	AFR_STACK_UNWIND (frame, local->op_ret, local->op_errno,
@@ -337,6 +339,8 @@ afr_lookup_cbk (call_frame_t *frame, void *cookie,
 	int             call_count = -1;
 	int             child_index = -1;
 	int             prev_child_index = -1;
+	uint32_t        open_fd_count = 0;
+	int             ret = 0;
 
 	child_index = (long) cookie;
 	priv = this->private;
@@ -365,6 +369,10 @@ afr_lookup_cbk (call_frame_t *frame, void *cookie,
 
 		if (afr_sh_has_data_pending (xattr, child_index, this))
 			local->need_data_self_heal = 1;
+
+		ret = dict_get_uint32 (xattr, GLUSTERFS_OPEN_FD_COUNT,
+				       &open_fd_count);
+		local->open_fd_count += open_fd_count;
 
 		/* in case of revalidate, we need to send stat of the
 		 * child whose stat was sent during the first lookup.
@@ -441,14 +449,15 @@ unlock:
 
 		if (local->success_count) {
 			/* check for govinda_gOvinda case in previous lookup */
-			if (dict_get (local->cont.lookup.inode->ctx,
-				      this->name))
+			if (!inode_ctx_get (local->cont.lookup.inode, 
+					   this, NULL))
 				local->need_data_self_heal = 1;
 		}
 
-		if (local->need_metadata_self_heal
-		    || local->need_data_self_heal
-		    || local->need_entry_self_heal) {
+		if ((local->need_metadata_self_heal
+		     || local->need_data_self_heal
+		     || local->need_entry_self_heal)
+		    && (!local->open_fd_count)) {
 
 			if (!local->cont.lookup.inode->st_mode) {
 				/* fix for RT #602 */
@@ -472,7 +481,7 @@ unlock:
 
 int
 afr_lookup (call_frame_t *frame, xlator_t *this,
-	    loc_t *loc, int32_t need_xattr)
+	    loc_t *loc, dict_t *xattr_req)
 {
 	afr_private_t *priv = NULL;
 	afr_local_t   *local = NULL;
@@ -501,12 +510,37 @@ afr_lookup (call_frame_t *frame, xlator_t *this,
 
 	/* By default assume ENOTCONN. On success it will be set to 0. */
 	local->op_errno = ENOTCONN;
+	
+	if ((xattr_req == NULL)
+	    && (priv->metadata_self_heal
+		|| priv->data_self_heal
+		|| priv->entry_self_heal))
+		local->xattr_req = dict_new ();
+	else
+		local->xattr_req = dict_ref (xattr_req);
+
+	if (priv->metadata_self_heal) {
+		ret = dict_set_uint64 (local->xattr_req, AFR_METADATA_PENDING,
+				       priv->child_count * sizeof(int32_t));
+	}
+	
+	if (priv->data_self_heal) {
+		ret = dict_set_uint64 (local->xattr_req, AFR_DATA_PENDING,
+				       priv->child_count * sizeof(int32_t));
+	}
+	
+	if (priv->entry_self_heal) {
+		ret = dict_set_uint64 (local->xattr_req, AFR_ENTRY_PENDING,
+				       priv->child_count * sizeof(int32_t));
+	}
+
+	ret = dict_set_uint64 (local->xattr_req, GLUSTERFS_OPEN_FD_COUNT, 0);
 
 	for (i = 0; i < priv->child_count; i++) {
 		STACK_WIND_COOKIE (frame, afr_lookup_cbk, (void *) (long) i,
 				   priv->children[i],
 				   priv->children[i]->fops->lookup,
-				   loc, 1);
+				   loc, local->xattr_req);
 	}
 
 	ret = 0;
@@ -582,17 +616,13 @@ afr_open (call_frame_t *frame, xlator_t *this,
 	afr_private_t * priv  = NULL;
 	afr_local_t *   local = NULL;
 	
-	char *govinda = NULL;
-
-	int32_t call_count = 0;
-	
-	int32_t op_ret   = -1;
-	int32_t op_errno = 0;
-	
-	int32_t wind_flags = flags & (~O_TRUNC);
-
 	int     i = 0;
 	int   ret = -1;
+
+	int32_t call_count = 0;	
+	int32_t op_ret   = -1;
+	int32_t op_errno = 0;
+	int32_t wind_flags = flags & (~O_TRUNC);
 
 	VALIDATE_OR_GOTO (frame, out);
 	VALIDATE_OR_GOTO (this, out);
@@ -601,12 +631,13 @@ afr_open (call_frame_t *frame, xlator_t *this,
 	
 	priv = this->private;
 
-	ret = dict_get_str (loc->inode->ctx, this->name, &govinda);
+	ret = inode_ctx_get (loc->inode, this, NULL);
 	if (ret == 0) {
 		/* if ctx is set it means self-heal failed */
 
 		gf_log (this->name, GF_LOG_WARNING, 
-			"returning EIO, file has to be manually corrected in backend");
+			"returning EIO, file has to be manually corrected "
+			"in backend");
 		op_errno = EIO;
 		goto out;
 	}
@@ -648,16 +679,15 @@ out:
 
 /* }}} */
 
-
 /* {{{ flush */
 
 int
-afr_flush_cbk (call_frame_t *frame, void *cookie,
-	       xlator_t *this, int32_t op_ret, int32_t op_errno)
+afr_flush_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this, 
+		      int32_t op_ret, int32_t op_errno)
 {
-	afr_local_t *local = NULL;
-	
-	int call_count = -1;
+	afr_local_t *   local = NULL;
+
+	int call_count  = -1;
 
 	local = frame->local;
 
@@ -672,25 +702,119 @@ afr_flush_cbk (call_frame_t *frame, void *cookie,
 
 	call_count = afr_frame_return (frame);
 
-	if (call_count == 0)
-		AFR_STACK_UNWIND (frame, local->op_ret, local->op_errno);
+	if (call_count == 0) {
+		local->transaction.resume (frame, this);
+	}
+	
+	return 0;
+}
+
+
+int
+afr_flush_wind (call_frame_t *frame, xlator_t *this)
+{
+	afr_local_t *local = NULL;
+	afr_private_t *priv = NULL;
+	
+	int i = 0;
+	int call_count = -1;
+
+	local = frame->local;
+	priv = this->private;
+
+	call_count = afr_up_children_count (priv->child_count, local->child_up);
+
+	if (call_count == 0) {
+		local->transaction.resume (frame, this);
+		return 0;
+	}
+
+	local->call_count = call_count;
+
+	for (i = 0; i < priv->child_count; i++) {				
+		if (local->child_up[i]) {
+			STACK_WIND_COOKIE (frame, afr_flush_wind_cbk, 
+					   (void *) (long) i,	
+					   priv->children[i], 
+					   priv->children[i]->fops->flush,
+					   local->fd);
+		
+			if (!--call_count)
+				break;
+		}
+	}
+	
+	return 0;
+}
+
+
+int
+afr_flush_done (call_frame_t *frame, xlator_t *this)
+{
+	afr_local_t *local = NULL;
+
+	local = frame->local;
+
+	AFR_STACK_UNWIND (frame, local->op_ret, local->op_errno);
 
 	return 0;
 }
 
 
 int
+afr_simple_flush_cbk (call_frame_t *frame, void *cookie,
+		      xlator_t *this, int32_t op_ret, int32_t op_errno)
+{
+        afr_local_t *local = NULL;
+        
+        int call_count = -1;
+	
+        local = frame->local;
+	
+        LOCK (&frame->lock);
+        {
+                if (op_ret == 0)
+                        local->op_ret = 0;
+
+                local->op_errno = op_errno;
+        }
+        UNLOCK (&frame->lock);
+	
+        call_count = afr_frame_return (frame);
+	
+        if (call_count == 0)
+                AFR_STACK_UNWIND (frame, local->op_ret, local->op_errno);
+	
+        return 0;
+}
+
+
+static int
+__is_fd_ctx_set (xlator_t *this, fd_t *fd)
+{
+	int _ret   = 0;
+	int op_ret = 0;
+
+	_ret = fd_ctx_get (fd, this, NULL);
+	if (_ret == 0)
+		op_ret = 1;
+
+	return op_ret;
+}
+
+
+int
 afr_flush (call_frame_t *frame, xlator_t *this, fd_t *fd)
 {
-	afr_private_t *priv = NULL;
-	afr_local_t *local = NULL;
+	afr_private_t * priv  = NULL;
+	afr_local_t   * local = NULL;
 
-	int ret = -1;
+	int ret        = -1;
+	int i          = 0;
+	int call_count = 0;
 
-	int i = 0;
-	int32_t call_count = 0;
-	int32_t op_ret   = -1;
-	int32_t op_errno = 0;
+	int op_ret   = -1;
+	int op_errno = 0;
 
 	VALIDATE_OR_GOTO (frame, out);
 	VALIDATE_OR_GOTO (this, out);
@@ -706,25 +830,48 @@ afr_flush (call_frame_t *frame, xlator_t *this, fd_t *fd)
 		goto out;
 	}
 
-	call_count = local->call_count;
 	frame->local = local;
 
-	for (i = 0; i < priv->child_count; i++) {
-		if (local->child_up[i]) {
-			STACK_WIND (frame, afr_flush_cbk,
-				    priv->children[i],
-				    priv->children[i]->fops->flush,
-				    fd);
-			if (!--call_count)
-				break;
+	if (__is_fd_ctx_set (this, fd)) {
+		local->op = GF_FOP_FLUSH;
+		local->transaction.fop    = afr_flush_wind;
+		local->transaction.done   = afr_flush_done;
+		
+		local->fd                 = fd_ref (fd);
+		
+		local->transaction.start  = 0;
+		local->transaction.len    = 0;
+		
+		local->transaction.pending = AFR_DATA_PENDING;
+		
+		afr_transaction (frame, this, AFR_FLUSH_TRANSACTION);
+	} else {
+		/*
+		 * if fd's ctx is not set, then there is no need
+		 * to erase changelog. So just send the flush
+		 */
+
+		call_count = local->call_count;
+
+		for (i = 0; i < priv->child_count; i++) {
+			if (local->child_up[i]) {
+				STACK_WIND (frame, afr_simple_flush_cbk,
+					    priv->children[i],
+					    priv->children[i]->fops->flush,
+					    fd);
+
+				if (!--call_count)
+					break;
+			}
 		}
 	}
 
 	op_ret = 0;
 out:
 	if (op_ret == -1) {
-		AFR_STACK_UNWIND (frame, op_ret, op_errno);
+		AFR_STACK_UNWIND (frame, op_ret, op_errno, NULL);
 	}
+
 	return 0;
 }
 
@@ -2040,9 +2187,9 @@ init (xlator_t *this)
 	}
 
 	/* XXX: return inode numbers from 1st subvolume till
-	   afr supports read-subvolume based on inode->ctx (and not itransform)
-
-	   for this reason afr_deitransform() returns 0 always
+	   afr supports read-subvolume based on inode's ctx 
+	   (and not itransform) for this reason afr_deitransform() 
+	   returns 0 always
 	*/
 	priv->read_child = 0;
 

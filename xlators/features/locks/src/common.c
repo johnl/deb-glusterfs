@@ -37,51 +37,53 @@
 #include "locks.h"
 
 
-static int
-__is_lock_grantable (pl_inode_t *pl_inode, posix_lock_t *lock,
-		     gf_lk_domain_t dom);
+int
+pl_is_lock_grantable (pl_inode_t *pl_inode, posix_lock_t *lock,
+		      gf_lk_domain_t dom);
 static void
 __insert_and_merge (pl_inode_t *pl_inode, posix_lock_t *lock,
 		    gf_lk_domain_t dom);
 
-#define DOMAIN_HEAD(pl_inode, dom) (dom == GF_LOCK_POSIX	\
-				    ? &pl_inode->ext_list	\
-				    : &pl_inode->int_list)
 
 pl_inode_t *
 pl_inode_get (xlator_t *this, inode_t *inode)
 {
-	pl_inode_t *pl_inode = NULL;
-	mode_t      st_mode = 0;
-	int         ret = 0;
+	pl_inode_t *pl_inode     = NULL;
+	mode_t      st_mode      = 0;
+	uint64_t    tmp_pl_inode = 0;
+	int         ret          = 0;
+	
+	LOCK (&inode->lock);
+	{
+		ret = inode_ctx_get (inode, this, &tmp_pl_inode);
+		if (ret == 0) {
+			pl_inode = (pl_inode_t *)(long)tmp_pl_inode;
+			goto out;
+		}
 
-	ret = dict_get_ptr (inode->ctx, this->name,
-			    (void **)((void *)&pl_inode));
-	if (ret == 0)
-		goto out;
+		pl_inode = CALLOC (1, sizeof (*pl_inode));
+		if (!pl_inode) {
+			gf_log (this->name, GF_LOG_ERROR,
+				"out of memory :(");
+			goto out;
+		}
 
-	pl_inode = CALLOC (1, sizeof (*pl_inode));
-	if (!pl_inode) {
-		gf_log (this->name, GF_LOG_ERROR,
-			"out of memory :(");
-		goto out;
+		st_mode  = inode->st_mode;
+		if ((st_mode & S_ISGID) && !(st_mode & S_IXGRP))
+			pl_inode->mandatory = 1;
+
+
+		pthread_mutex_init (&pl_inode->mutex, NULL);
+		
+		INIT_LIST_HEAD (&pl_inode->dir_list);
+		INIT_LIST_HEAD (&pl_inode->ext_list);
+		INIT_LIST_HEAD (&pl_inode->int_list);
+		INIT_LIST_HEAD (&pl_inode->rw_list);
+
+		ret = inode_ctx_put (inode, this, (uint64_t)(long)pl_inode);
 	}
-
-	st_mode  = inode->st_mode;
-	if ((st_mode & S_ISGID) && !(st_mode & S_IXGRP))
-		pl_inode->mandatory = 1;
-
-
-	pthread_mutex_init (&pl_inode->mutex, NULL);
-
-	INIT_LIST_HEAD (&pl_inode->dir_list);
-	INIT_LIST_HEAD (&pl_inode->ext_list);
-	INIT_LIST_HEAD (&pl_inode->int_list);
-	INIT_LIST_HEAD (&pl_inode->rw_list);
-
-	ret = dict_set_ptr (inode->ctx, this->name, (void *)(pl_inode));
-
 out:
+	UNLOCK (&inode->lock);
 	return pl_inode;
 }
 
@@ -146,8 +148,8 @@ posix_lock_to_flock (posix_lock_t *lock, struct flock *flock)
 
 
 /* Insert the lock into the inode's lock list */
-static void
-__insert_lock (pl_inode_t *pl_inode, posix_lock_t *lock, gf_lk_domain_t dom)
+void
+pl_insert_lock (pl_inode_t *pl_inode, posix_lock_t *lock, gf_lk_domain_t dom)
 {
 	list_add_tail (&lock->list, DOMAIN_HEAD (pl_inode, dom));
 
@@ -303,9 +305,9 @@ first_overlap (pl_inode_t *pl_inode, posix_lock_t *lock,
 
 
 /* Return true if lock is grantable */
-static int
-__is_lock_grantable (pl_inode_t *pl_inode, posix_lock_t *lock,
-		     gf_lk_domain_t dom)
+int
+pl_is_lock_grantable (pl_inode_t *pl_inode, posix_lock_t *lock,
+		      gf_lk_domain_t dom)
 {
 	posix_lock_t *l = NULL;
 	int           ret = 1;
@@ -396,14 +398,14 @@ __insert_and_merge (pl_inode_t *pl_inode, posix_lock_t *lock,
 		}
 
 		if ((conf->fl_type == F_RDLCK) && (lock->fl_type == F_RDLCK)) {
-			__insert_lock (pl_inode, lock, dom);
+			pl_insert_lock (pl_inode, lock, dom);
 			return;
 		}
 	}
 
 	/* no conflicts, so just insert */
 	if (lock->fl_type != F_UNLCK) {
-		__insert_lock (pl_inode, lock, dom);
+		pl_insert_lock (pl_inode, lock, dom);
 	} else {
 		__destroy_lock (lock);
 	}
@@ -435,12 +437,12 @@ __grant_blocked_locks (xlator_t *this, pl_inode_t *pl_inode,
 	list_for_each_entry_safe (l, tmp, &tmp_list, list) {
 		list_del_init (&l->list);
 
-		if (__is_lock_grantable (pl_inode, l, dom)) {
+		if (pl_is_lock_grantable (pl_inode, l, dom)) {
 			conf = CALLOC (1, sizeof (*conf));
 
 			if (!conf) {
 				l->blocked = 1;
-				__insert_lock (pl_inode, l, dom);
+				pl_insert_lock (pl_inode, l, dom);
 				continue;
 			}
 
@@ -461,7 +463,7 @@ __grant_blocked_locks (xlator_t *this, pl_inode_t *pl_inode,
 			list_add (&conf->list, granted);
 		} else {
 			l->blocked = 1;
-			__insert_lock (pl_inode, l, dom);
+			pl_insert_lock (pl_inode, l, dom);
 		}
 	}
 }
@@ -504,7 +506,7 @@ pl_setlk (xlator_t *this, pl_inode_t *pl_inode, posix_lock_t *lock,
 
 	pthread_mutex_lock (&pl_inode->mutex);
 	{
-		if (__is_lock_grantable (pl_inode, lock, dom)) {
+		if (pl_is_lock_grantable (pl_inode, lock, dom)) {
 			gf_log (this->name, GF_LOG_DEBUG,
 				"%s (pid=%d) %"PRId64" - %"PRId64" => OK",
 				lock->fl_type == F_UNLCK ? "Unlock" : "Lock",
@@ -520,7 +522,7 @@ pl_setlk (xlator_t *this, pl_inode_t *pl_inode, posix_lock_t *lock,
 				lock->user_flock.l_start,
 				lock->user_flock.l_len);
 			lock->blocked = 1;
-			__insert_lock (pl_inode, lock, dom);
+			pl_insert_lock (pl_inode, lock, dom);
 			ret = -1;
 		} else {
 			gf_log (this->name, GF_LOG_DEBUG,

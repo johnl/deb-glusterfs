@@ -81,6 +81,7 @@ typedef struct {
 	fd_t *healing_fd;
 	int   op_failed;
 
+	int   file_has_holes;
 	blksize_t block_size;
 	off_t file_size;
 	off_t offset;
@@ -96,6 +97,7 @@ typedef enum {
 	AFR_METADATA_TRANSACTION,      /* chmod, chown, ... */
 	AFR_ENTRY_TRANSACTION,         /* create, rmdir, ... */
 	AFR_ENTRY_RENAME_TRANSACTION,  /* rename */
+	AFR_FLUSH_TRANSACTION,         /* flush */
 } afr_transaction_type;
 
 typedef struct _afr_local {
@@ -125,12 +127,15 @@ typedef struct _afr_local {
 	int            child_count;
 
 	int32_t *child_errno;
-
+	
+	dict_t  *xattr_req;
+	int      open_fd_count;
 	/* 
 	   This struct contains the arguments for the "continuation"
 	   (scheme-like) of fops
 	*/
-	   
+
+	int   op;
 	struct {
 		struct {
 			unsigned char buf_set;

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+   Copyright (c) 2008, 2009 Z RESEARCH, Inc. <http://www.zresearch.com>
    This file is part of GlusterFS.
 
    GlusterFS is free software; you can redistribute it and/or modify
@@ -691,7 +691,7 @@ bdb_readv (call_frame_t *frame,
 	GF_VALIDATE_OR_GOTO ("bdb", this, out);
 	GF_VALIDATE_OR_GOTO (this->name, fd, out);
 
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 
@@ -784,7 +784,7 @@ bdb_writev (call_frame_t *frame,
 	GF_VALIDATE_OR_GOTO (this->name, fd, out);
 	GF_VALIDATE_OR_GOTO (this->name, vector, out);
 
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 
@@ -863,7 +863,7 @@ bdb_flush (call_frame_t *frame,
 	GF_VALIDATE_OR_GOTO ("bdb", this, out);
 	GF_VALIDATE_OR_GOTO (this->name, fd, out);
 
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 	
@@ -885,7 +885,7 @@ bdb_release (xlator_t *this,
   int32_t op_errno = EBADFD;
   struct bdb_fd *bfd = NULL;
   
-  if ((bfd = bdb_extract_bfd (fd, this->name)) == NULL){
+  if ((bfd = bdb_extract_bfd (fd, this)) == NULL){
     gf_log (this->name,
 	    GF_LOG_ERROR,
 	    "failed to extract %s specific information from fd:%p", this->name, fd);
@@ -975,7 +975,7 @@ int32_t
 bdb_lookup (call_frame_t *frame,
             xlator_t *this,
             loc_t *loc,
-            int32_t need_xattr)
+            dict_t *xattr_req)
 {
 	struct stat stbuf           = {0, };
 	int32_t op_ret              = -1;
@@ -991,7 +991,8 @@ bdb_lookup (call_frame_t *frame,
 	int32_t entry_size          = 0;
 	char *file_content          = NULL;
 	data_t *file_content_data   = NULL;
-	
+	uint64_t   need_xattr       = 0;
+
 	GF_VALIDATE_OR_GOTO ("bdb", frame, out);
 	GF_VALIDATE_OR_GOTO ("bdb", this, out);
 	GF_VALIDATE_OR_GOTO (this->name, loc, out);
@@ -1074,8 +1075,8 @@ bdb_lookup (call_frame_t *frame,
 		op_ret = -1;
 		op_errno = ENOENT;
 		GF_VALIDATE_OR_GOTO (this->name, bctx, out);
-
-		if (need_xattr) {
+		
+		if (GF_FILE_CONTENT_REQUESTED(xattr_req, &need_xattr)) {
 			entry_size = bdb_db_get (bctx, 
 						 NULL, 
 						 loc->path, 
@@ -1107,9 +1108,9 @@ bdb_lookup (call_frame_t *frame,
 				db_path, strerror (op_errno));		
 			goto out;				
 		}						
-
-		if ((need_xattr >= entry_size) && 
-		    (entry_size) && (file_content)) {
+		
+		if ((need_xattr >= entry_size)
+		    && (entry_size) && (file_content)) {
 			file_content_data = data_from_dynptr (file_content, 
 							      entry_size);
 			xattr = get_new_dict ();
@@ -1322,7 +1323,7 @@ bdb_getdents (call_frame_t *frame,
 	GF_VALIDATE_OR_GOTO ("bdb", this, out);
 	GF_VALIDATE_OR_GOTO (this->name, fd, out);
 
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 
@@ -1491,7 +1492,7 @@ bdb_releasedir (xlator_t *this,
   int32_t op_errno = 0;
   struct bdb_dir *bfd = NULL;
 
-  if ((bfd = bdb_extract_bfd (fd, this->name)) == NULL) {
+  if ((bfd = bdb_extract_bfd (fd, this)) == NULL) {
     gf_log (this->name, 
 	    GF_LOG_ERROR, 
 	    "failed to extract fd data from fd=%p", fd);
@@ -2451,7 +2452,7 @@ bdb_fsyncdir (call_frame_t *frame,
 	
 	frame->root->rsp_refs = NULL;
 
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 
@@ -2577,7 +2578,7 @@ bdb_setdents (call_frame_t *frame,
 
 	frame->root->rsp_refs = NULL;
 	
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 
@@ -2691,7 +2692,7 @@ bdb_fstat (call_frame_t *frame,
 	GF_VALIDATE_OR_GOTO ("bdb", this, out);
 	GF_VALIDATE_OR_GOTO (this->name, fd, out);
 	
-	bfd      = bdb_extract_bfd (fd, this->name);
+	bfd      = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 
@@ -2744,7 +2745,7 @@ bdb_readdir (call_frame_t *frame,
 
 	INIT_LIST_HEAD (&entries.list);
 	
-	bfd = bdb_extract_bfd (fd, this->name);
+	bfd = bdb_extract_bfd (fd, this);
 	op_errno = EBADFD;
 	GF_VALIDATE_OR_GOTO (this->name, bfd, out);
 

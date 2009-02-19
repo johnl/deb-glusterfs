@@ -28,6 +28,8 @@
 #include <signal.h>
 #include <libgen.h>
 
+#include <sys/utsname.h>
+
 #include <stdint.h>
 #include <pthread.h>
 
@@ -90,8 +92,8 @@ static struct argp_option gf_options[] = {
 	 "File to use as VOLFILE [default : "DEFAULT_CLIENT_VOLUME_FILE" or "
 	 DEFAULT_SERVER_VOLUME_FILE"]"},
  	{"log-level", ARGP_LOG_LEVEL_KEY, "LOGLEVEL", 0, 
- 	 "Logging severity.  Valid options are DEBUG, WARNING, ERROR, "
-	 "CRITICAL and NONE [default: WARNING]"},
+ 	 "Logging severity.  Valid options are DEBUG, NORMAL, WARNING, ERROR, "
+	 "CRITICAL and NONE [default: NORMAL]"},
  	{"log-file", ARGP_LOG_FILE_KEY, "LOGFILE", 0, 
  	 "File to use for logging [default: " 
 	 DEFAULT_LOG_FILE_DIRECTORY "/" PACKAGE_NAME ".log" "]"},
@@ -148,22 +150,39 @@ _gf_dump_details (int argc, char **argv)
         char         timestr[256];
         time_t       utime = 0;
         struct tm   *tm = NULL;
+	pid_t        mypid = 0;
+	struct utsname uname_buf = {{0, }, };
+	int            uname_ret = -1;
 
 	utime = time (NULL);
 	tm    = localtime (&utime);
+	mypid = getpid ();
+	uname_ret   = uname (&uname_buf);
 
         /* Which TLA? What time? */
         strftime (timestr, 256, "%Y-%m-%d %H:%M:%S", tm); 
-        fprintf (gf_log_logfile, "\nVersion      : %s %s built on %s %s\n", 
+	fprintf (gf_log_logfile, 
+		 "========================================"
+		 "========================================\n");
+        fprintf (gf_log_logfile, "Version      : %s %s built on %s %s\n", 
                  PACKAGE_NAME, PACKAGE_VERSION, __DATE__, __TIME__);
         fprintf (gf_log_logfile, "TLA Revision : %s\n", 
                  GLUSTERFS_REPOSITORY_REVISION);
         fprintf (gf_log_logfile, "Starting Time: %s\n", timestr);
         fprintf (gf_log_logfile, "Command line : ");
-
         for (i = 0; i < argc; i++) {
                 fprintf (gf_log_logfile, "%s ", argv[i]);
         }
+
+	fprintf (gf_log_logfile, "\nPID          : %d\n", mypid);
+	
+	if (uname_ret == 0) {
+		fprintf (gf_log_logfile, "System name  : %s\n", uname_buf.sysname);
+		fprintf (gf_log_logfile, "Nodename     : %s\n", uname_buf.nodename);
+		fprintf (gf_log_logfile, "Kernel Release : %s\n", uname_buf.release);
+		fprintf (gf_log_logfile, "Hardware Identifier: %s\n", uname_buf.machine);
+	}
+
 
         fprintf (gf_log_logfile, "\n");
         fflush (gf_log_logfile);
@@ -785,11 +804,6 @@ cleanup_and_exit (int signum)
 		ctx->specfp = NULL;
 	}
 
-	if (ctx->specfp) {
-		fclose (ctx->specfp);
-		ctx->specfp = NULL;
-	}
-	
 	if (ctx->cmd_args.pid_file) {
 		unlink (ctx->cmd_args.pid_file);
 		ctx->cmd_args.pid_file = NULL;
@@ -799,7 +813,7 @@ cleanup_and_exit (int signum)
 		trav = ctx->graph;
 		ctx->graph = NULL;
 		while (trav) {
-			//trav->fini (trav);
+			trav->fini (trav);
 			trav = trav->next;
 		}
 		exit (0);
@@ -815,6 +829,8 @@ zr_build_process_uuid ()
 	char           tmp_str[1024] = {0,};
 	char           hostname[256] = {0,};
 	struct timeval tv = {0,};
+	struct tm      now = {0, };
+	char           now_str[32];
 
 	if (-1 == gettimeofday(&tv, NULL)) {
 		gf_log ("", GF_LOG_ERROR, 
@@ -828,8 +844,10 @@ zr_build_process_uuid ()
 			strerror (errno));
 	}
 
-	snprintf (tmp_str, 1024, "%s.%d.%ld.%ld", 
-		  hostname, getpid(), tv.tv_sec, tv.tv_usec);
+	localtime_r (&tv.tv_sec, &now);
+	strftime (now_str, 32, "%Y/%m/%d-%H:%M:%S", &now);
+	snprintf (tmp_str, 1024, "%s-%d-%s:%ld", 
+		  hostname, getpid(), now_str, tv.tv_usec);
 	
 	return strdup (tmp_str);
 }
@@ -875,6 +893,7 @@ main (int argc, char *argv[])
 	xlator_t         *graph = NULL;
 	xlator_t         *trav = NULL;
 	int               fuse_volume_found = 0;
+	int               xl_count = 0;
 	uint8_t           process_mode = 0;
 
 	utime = time (NULL);
@@ -1014,7 +1033,7 @@ main (int argc, char *argv[])
 		return -1;
 	}
 	_gf_dump_details (argc, argv);
-	gf_log_volume_file (specfp);
+	gf_log_volume_file (specfp); 
 	if ((graph = _parse_specfp (ctx, specfp)) == NULL) {
 		/* _parse_specfp() prints necessary error message */
 		fprintf (stderr, "exiting\n");
@@ -1034,21 +1053,17 @@ main (int argc, char *argv[])
 		if (strcmp (trav->type, ZR_XLATOR_FUSE) == 0) {
 			if (dict_get (trav->options, 
 				      ZR_MOUNTPOINT_OPT) != NULL) {
+				trav->ctx = graph->ctx;
 				fuse_volume_found = 1;
-				fprintf (stderr, 
-					 "fuse volume and MOUNT-POINT "
-					 "argument given. ignoring "
-					 "MOUNT-POINT argument\n");
-				gf_log ("glusterfs", GF_LOG_WARNING, 
-					"fuse volume and MOUNT-POINT "
-					"argument given. ignoring "
-					"MOUNT-POINT argument");
-				break;
 			}
 		}
+
+		xl_count++;  /* Getting this value right is very important */
 		trav = trav->next;
 	}
 	
+	ctx->xl_count = xl_count + 1;
+
 	if (!fuse_volume_found && (cmd_args->mount_point != NULL)) {
 		if ((graph = _add_fuse_mount (graph)) == NULL) {
 			/* _add_fuse_mount() prints necessary 
@@ -1099,6 +1114,8 @@ main (int argc, char *argv[])
 
 	/* Send PARENT_UP notify to all the translators now */
 	graph->notify (graph, GF_EVENT_PARENT_UP, ctx->graph);
+
+	gf_log ("glusterfs", GF_LOG_NORMAL, "Successfully started");
 	
 	event_dispatch (ctx->event_pool);
 

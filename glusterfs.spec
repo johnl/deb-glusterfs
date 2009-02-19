@@ -4,40 +4,40 @@
 %define release_version 1
 
 # if you wish to compile an rpm without ibverbs support, compile like this...
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without ibverbs
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without ibverbs
 %define with_ibverbs %{?_without_ibverbs:0}%{?!_without_ibverbs:1}
 
 # if you wish to compile an rpm without building the client RPMs...
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without client
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without client
 %define with_client %{?_without_client:0}%{?!_without_client:1}
 
 # if you wish to compile an rpm without BDB translator...
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without bdb
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without bdb
 %define with_bdb %{?_without_bdb:0}%{?!_without_bdb:1}
 
 # if you wish to compile an rpm without libglusterfsclient...
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without libglfsclient
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without libglfsclient
 %define with_libglfsclient %{?_without_libglfsclient:0}%{?!_without_libglfsclient:1}
 
 # if you wish to compile an rpm without mod_glusterfs support...
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without modglfs
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without modglfs
 %define with_modglfs %{?_without_modglfs:0}%{?!_without_modglfs:1}
 
 # if you wish to compile an rpm with apache at nonstandard location
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without apxs_default --define 'apxs_path /usr/local/apache/bin' 
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without apxs_default --define 'apxs_path /usr/local/apache/bin' 
 %define with_apxs_default %{?_without_apxs_default:0}%{?!_without_apxs_default:1}
 %{!?apxs_path: %define apxs_path %{nil}}
 
 # if you wish to compile an rpm with apache binaries at nonstandard path
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without apache_auto -define 'apxs_bin_path /usr/local/apache/bin/apxs'
-# rpmbuild -ta glusterfs-2.0.0rc1.tar.gz --without apache_auto -define 'apache_bin_path /usr/local/apache/bin/apache2'
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without apache_auto -define 'apxs_bin_path /usr/local/apache/bin/apxs'
+# rpmbuild -ta glusterfs-2.0.0qa16.tar.gz --without apache_auto -define 'apache_bin_path /usr/local/apache/bin/apache2'
 %define with_apache_auto %{?_without_apache_auto:0}%{?!_without_apache_auto:1}
 %{!?apxs_bin_path: %define apxs_bin_path %{nil}}
 %{!?apache_bin_path: %define apache_bin_path %{nil}}
 
 Summary: GNU Cluster File System
 Name: glusterfs
-Version: 2.0.0rc1
+Version: 2.0.0qa16
 Release: %release_version
 License: GPLv3 or later
 Group: System Environment/Base
@@ -64,7 +64,7 @@ BuildRequires: libtool
 BuildRequires: byacc bison flex
 BuildRequires: gcc
 BuildRequires: make
-URL: ftp://ftp.zresearch.com/pub/gluster/glusterfs/1.4-qa/glusterfs-2.0.0rc1.tar.gz
+URL: ftp://ftp.zresearch.com/pub/gluster/glusterfs/1.4-qa/glusterfs-2.0.0qa16.tar.gz
 Source: %name-%version.tar.gz
 
 %description
@@ -153,6 +153,8 @@ This package provides the development libraries.
 %_prefix/sbin/glusterfs
 %_prefix/sbin/glusterfsd
 %_mandir/man8/glusterfs.8.gz
+%_infodir/user-guide.info.gz
+%exclude %_infodir/dir
 
 %if %with_client
 /sbin/mount.glusterfs

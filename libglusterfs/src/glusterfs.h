@@ -66,6 +66,8 @@
 #define ZR_FILE_CONTENT_STR     "glusterfs.file."
 #define ZR_FILE_CONTENT_STRLEN 15
 
+#define GLUSTERFS_OPEN_FD_COUNT "glusterfs.open-fd-count"
+
 #define ZR_FILE_CONTENT_REQUEST(key) (!strncmp(key, ZR_FILE_CONTENT_STR, \
 					       ZR_FILE_CONTENT_STRLEN))
 
@@ -132,6 +134,7 @@ typedef enum {
         GF_MOP_STATS,
         GF_MOP_SETSPEC,
         GF_MOP_GETSPEC,
+	GF_MOP_PING,
         GF_MOP_MAXVALUE   /* 5 */
 } glusterfs_mop_t;
 
@@ -252,6 +255,7 @@ struct _glusterfs_ctx {
 	void              *top; /* either fuse or server protocol */
 	void              *event_pool;
 	pthread_mutex_t    lock;
+	int                xl_count;
 };
 
 typedef struct _glusterfs_ctx glusterfs_ctx_t;

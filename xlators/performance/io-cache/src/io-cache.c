@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+  Copyright (c) 2007, 2008, 2009 Z RESEARCH, Inc. <http://www.zresearch.com>
   This file is part of GlusterFS.
 
   GlusterFS is free software; you can redistribute it and/or modify
@@ -43,7 +43,8 @@ ioc_inode_reupdate (ioc_inode_t *ioc_inode)
 {
 	ioc_table_t *table = ioc_inode->table;
 
-	list_add_tail (&ioc_inode->inode_lru, &table->inode_lru[ioc_inode->weight]);
+	list_add_tail (&ioc_inode->inode_lru, 
+		       &table->inode_lru[ioc_inode->weight]);
   
 	return ioc_inode;
 }
@@ -61,8 +62,10 @@ ioc_get_inode (dict_t *dict,
 		table = ioc_inode->table;
 
 		ioc_table_lock (table);
-		if (list_empty (&ioc_inode->inode_lru)) {
-			ioc_inode = ioc_inode_reupdate (ioc_inode);
+		{
+			if (list_empty (&ioc_inode->inode_lru)) {
+				ioc_inode = ioc_inode_reupdate (ioc_inode);
+			}
 		}
 		ioc_table_unlock (table);
 	}
@@ -116,7 +119,9 @@ ioc_inode_flush (ioc_inode_t *ioc_inode)
 	int32_t destroy_size = 0;    
 
 	ioc_inode_lock (ioc_inode);
-	destroy_size = __ioc_inode_flush (ioc_inode);
+	{
+		destroy_size = __ioc_inode_flush (ioc_inode);
+	}
 	ioc_inode_unlock (ioc_inode);
   
 	if (destroy_size) {
@@ -168,10 +173,11 @@ ioc_utimens (call_frame_t *frame,
 	     loc_t *loc,
 	     struct timespec *tv)
 {
-	ioc_inode_t *ioc_inode = ioc_get_inode (loc->inode->ctx, this->name);
+	uint64_t ioc_inode = 0;
+	inode_ctx_get (loc->inode, this, &ioc_inode);
 
 	if (ioc_inode)
-		ioc_inode_flush (ioc_inode);
+		ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
 
 	STACK_WIND (frame, ioc_utimens_cbk,
 		    FIRST_CHILD (this),
@@ -191,136 +197,154 @@ ioc_lookup_cbk (call_frame_t *frame,
 		dict_t *dict)
 {
 	ioc_inode_t *ioc_inode = NULL;
-	uint8_t cache_still_valid = 0;
 	ioc_local_t *local = frame->local;
-	data_t *page_data = NULL;
 	ioc_table_t *table = this->private;
-	char need_unref = 0;
-  
-	if (op_ret == 0) {
-		ioc_inode = ioc_get_inode (inode->ctx, this->name);
+	ioc_page_t  *page = NULL;
+	data_t      *page_data = NULL;
+	data_t      *content_data = NULL;
+	char        *src = NULL;
+	char        *dst = NULL;
+	char         need_unref = 0;
+	uint8_t      cache_still_valid = 0;
+	uint32_t     weight = 0;
+	uint64_t     tmp_ioc_inode = 0;
+	char        *buf = NULL;
+	char        *tmp = NULL;
+	int          i;
+	
+	if (op_ret != 0) 
+		goto out;
 
-		if (ioc_inode) {
-			cache_still_valid = ioc_cache_still_valid (ioc_inode, stbuf);
-    
-			if (!cache_still_valid) {
-				ioc_inode_flush (ioc_inode);
-			} 
-			/* update the time-stamp of revalidation */
-			ioc_inode_lock (ioc_inode);
-			{
-				gettimeofday (&ioc_inode->tv, NULL);
-			}
-			ioc_inode_unlock (ioc_inode);
-
-			ioc_table_lock (ioc_inode->table);
-			{
-				list_move_tail (&ioc_inode->inode_lru,
-						&table->inode_lru[ioc_inode->weight]);
-			}
-			ioc_table_unlock (ioc_inode->table);
+	inode_ctx_get (inode, this, &tmp_ioc_inode);
+	ioc_inode = (ioc_inode_t *)(long)tmp_ioc_inode;
+	if (ioc_inode) {
+		cache_still_valid = ioc_cache_still_valid (ioc_inode, 
+							   stbuf);
+		
+		if (!cache_still_valid) {
+			ioc_inode_flush (ioc_inode);
+		} 
+		/* update the time-stamp of revalidation */
+		ioc_inode_lock (ioc_inode);
+		{
+			gettimeofday (&ioc_inode->tv, NULL);
 		}
-
-		if (local && stbuf->st_size && local->need_xattr >= stbuf->st_size) {
-			char *src = NULL, *dst = NULL;
-			data_t *content_data = NULL;
-			ioc_page_t *page = NULL;
-
-			if (!ioc_inode) {
-				uint32_t weight = ioc_get_priority (table, local->file_loc.path);
-      
-				ioc_inode = ioc_inode_update (table, inode, weight);
-				dict_set (inode->ctx, this->name, data_from_static_ptr (ioc_inode));
-			}
-
-			ioc_inode_lock (ioc_inode);
-			{
-				content_data = dict_get (dict, "glusterfs.content");
-				page = ioc_page_get (ioc_inode, 0);
-
-				if (content_data) {
-					if (page) {
-						dict_unref (page->ref);
-						free (page->vector);
-						page->vector = NULL;
-
-						ioc_table_lock (table);
-						{
-							table->cache_used -= page->size;
-						}
-						ioc_table_unlock (table);
-					} else {
-						page = ioc_page_create (ioc_inode, 0);
-					}
-
-					dst = CALLOC (1, stbuf->st_size);
-					page->ref = dict_ref (get_new_dict ());
-					page_data = data_from_dynptr (dst, stbuf->st_size);
-					dict_set (page->ref, NULL, page_data);
-
-					src = data_to_ptr (content_data);
-					memcpy (dst, src, stbuf->st_size);
-
-					page->vector = CALLOC (1, sizeof (*page->vector));
-					page->vector->iov_base = dst;
-					page->vector->iov_len = stbuf->st_size;
-					page->count = 1;
-      
-					page->waitq = NULL;
-					page->size = stbuf->st_size;
-					page->ready = 1;
-
+		ioc_inode_unlock (ioc_inode);
+		
+		ioc_table_lock (ioc_inode->table);
+		{
+			list_move_tail (&ioc_inode->inode_lru,
+					&table->inode_lru[ioc_inode->weight]);
+		}
+		ioc_table_unlock (ioc_inode->table);
+	}
+	
+	if (local && stbuf->st_size && 
+	    local->need_xattr >= stbuf->st_size) {
+		if (!ioc_inode) {
+			weight = ioc_get_priority (table, 
+						   local->file_loc.path);
+			ioc_inode = ioc_inode_update (table, 
+						      inode, weight);
+			inode_ctx_put (inode, this, 
+				       (uint64_t)(long)ioc_inode);
+		}
+		
+		ioc_inode_lock (ioc_inode);
+		{
+			content_data = dict_get (dict, "glusterfs.content");
+			page = ioc_page_get (ioc_inode, 0);
+			
+			if (content_data) {
+				if (page) {
+					dict_unref (page->ref);
+					free (page->vector);
+					page->vector = NULL;
+					
 					ioc_table_lock (table);
 					{
-						table->cache_used += page->size;
+						table->cache_used -= 
+							page->size;
 					}
 					ioc_table_unlock (table);
-
 				} else {
-					if (!(page && page->ready)) {
-						gf_log (this->name,
-							GF_LOG_DEBUG,
-							"page not present");
-
-						ioc_inode_unlock (ioc_inode);
-						STACK_WIND (frame,
-							    ioc_lookup_cbk,
-							    FIRST_CHILD (this),
-							    FIRST_CHILD (this)->fops->lookup,
-							    &local->file_loc,
-							    local->need_xattr);
-						return 0;
-					} else {
-						char *buf = CALLOC (1, stbuf->st_size);
-						char *tmp = buf;
-						int i;
-						for (i = 0; i < page->count; i++) {
-							memcpy (tmp, page->vector[i].iov_base, page->vector[i].iov_len);
-							tmp += page->vector[i].iov_len;
-						}
-
-						gf_log (this->name,
-							GF_LOG_DEBUG,
-							"serving file %s from io-cache", local->file_loc.path);
-
-						if (!dict) {
-							need_unref = 1;
-							dict = dict_ref (get_new_dict ());
-						}
-						dict_set (dict, "glusterfs.content", data_from_dynptr (buf, stbuf->st_size));
-					}
+					page = ioc_page_create (ioc_inode, 0);
 				}
-				ioc_inode->mtime = stbuf->st_mtime;
-				gettimeofday (&ioc_inode->tv, NULL);
-			}
-			ioc_inode_unlock (ioc_inode);
+				
+				dst = CALLOC (1, stbuf->st_size);
+				page->ref = dict_ref (get_new_dict ());
+				page_data = data_from_dynptr (dst, 
+							      stbuf->st_size);
+				dict_set (page->ref, NULL, page_data);
+				
+				src = data_to_ptr (content_data);
+				memcpy (dst, src, stbuf->st_size);
 
-			if (content_data && ioc_need_prune (ioc_inode->table)) {
-				ioc_prune (ioc_inode->table);
+				page->vector = CALLOC (1, 
+						       sizeof (*page->vector));
+				page->vector->iov_base = dst;
+				page->vector->iov_len = stbuf->st_size;
+				page->count = 1;
+      
+				page->waitq = NULL;
+				page->size = stbuf->st_size;
+				page->ready = 1;
+
+				ioc_table_lock (table);
+				{
+					table->cache_used += page->size;
+				}
+				ioc_table_unlock (table);
+				
+			} else {
+				if (!(page && page->ready)) {
+					gf_log (this->name, GF_LOG_DEBUG,
+						"page not present");
+					
+					ioc_inode_unlock (ioc_inode);
+					STACK_WIND (frame,
+						    ioc_lookup_cbk,
+						    FIRST_CHILD (this),
+						    FIRST_CHILD (this)->fops->lookup,
+						    &local->file_loc,
+						    local->xattr_req);
+					return 0;
+				} 
+				buf = CALLOC (1, stbuf->st_size);
+				tmp = buf;
+
+				for (i = 0; i < page->count; i++) {
+					memcpy (tmp, page->vector[i].iov_base, 
+						page->vector[i].iov_len);
+					tmp += page->vector[i].iov_len;
+				}
+				
+				gf_log (this->name, GF_LOG_DEBUG,
+					"serving file %s from cache", 
+					local->file_loc.path);
+				
+				if (!dict) {
+					need_unref = 1;
+					dict = dict_ref (
+						get_new_dict ());
+				}
+				dict_set (dict, "glusterfs.content",
+					  data_from_dynptr (buf, 
+							    stbuf->st_size));
 			}
+
+			ioc_inode->mtime = stbuf->st_mtime;
+			gettimeofday (&ioc_inode->tv, NULL);
+		}
+		ioc_inode_unlock (ioc_inode);
+		
+		if (content_data && 
+		    ioc_need_prune (ioc_inode->table)) {
+			ioc_prune (ioc_inode->table);
 		}
 	}
 
+ out:
 	STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf, dict);
 
 	if (need_unref) {
@@ -334,27 +358,32 @@ int32_t
 ioc_lookup (call_frame_t *frame,
 	    xlator_t *this,
 	    loc_t *loc,
-	    int32_t need_xattr)
+	    dict_t *xattr_req)
 {
-	if (need_xattr) {
-		ioc_inode_t *ioc_inode = NULL;
-		ioc_page_t *page = NULL;
+	uint64_t content_limit = 0;
 
+	if (GF_FILE_CONTENT_REQUESTED(xattr_req, &content_limit)) {
+		uint64_t     tmp_ioc_inode = 0;
+		ioc_inode_t *ioc_inode = NULL;
+		ioc_page_t  *page = NULL;
 		ioc_local_t *local = CALLOC (1, sizeof (*local));
-		local->need_xattr = need_xattr;
+
+		local->need_xattr = content_limit;
 		local->file_loc.path = loc->path;
 		local->file_loc.inode = loc->inode;
 		frame->local = local;
 
-		ioc_inode = ioc_get_inode (loc->inode->ctx, this->name);
+		inode_ctx_get (loc->inode, this, &tmp_ioc_inode);
+		ioc_inode = (ioc_inode_t *)(long)tmp_ioc_inode;
 
 		if (ioc_inode) {
 			ioc_inode_lock (ioc_inode);
 			{
 				page = ioc_page_get (ioc_inode, 0);
-				if (need_xattr <= ioc_inode->table->page_size
-				    && page && page->ready) {
-					need_xattr = -1;
+				if ((content_limit <= 
+				     ioc_inode->table->page_size) && 
+				    page && page->ready) {
+					local->need_xattr = -1;
 				}
 			}
 			ioc_inode_unlock (ioc_inode);
@@ -366,7 +395,7 @@ ioc_lookup (call_frame_t *frame,
 		    FIRST_CHILD (this),
 		    FIRST_CHILD (this)->fops->lookup,
 		    loc,
-		    need_xattr);
+		    xattr_req);
 	return 0;
 }
 
@@ -382,12 +411,12 @@ int32_t
 ioc_forget (xlator_t *this,
 	    inode_t *inode)
 {
-	ioc_inode_t *ioc_inode = NULL;
+	uint64_t ioc_inode = 0;
 
-	ioc_inode = ioc_get_inode (inode->ctx, this->name);
+	inode_ctx_get (inode, this, &ioc_inode);
 
 	if (ioc_inode)
-		ioc_inode_destroy (ioc_inode);
+		ioc_inode_destroy ((ioc_inode_t *)(long)ioc_inode);
 	    
 	return 0;
 }
@@ -422,22 +451,27 @@ ioc_cache_validate_cbk (call_frame_t *frame,
 	if ((op_ret == -1) || 
 	    ((op_ret >= 0) && !ioc_cache_still_valid(ioc_inode, stbuf))) {
 		gf_log (ioc_inode->table->xl->name, GF_LOG_DEBUG,
-			"cache for inode(%p) is invalid. flushing all pages", ioc_inode);
-		ioc_inode_lock (ioc_inode);
-		/* NOTE: only pages with no waiting frames are flushed by ioc_inode_flush.
-		 *       page_fault will be generated for all the pages which have waiting frames
-		 *       by ioc_inode_wakeup()
+			"cache for inode(%p) is invalid. flushing all pages",
+			ioc_inode);
+		/* NOTE: only pages with no waiting frames are flushed by 
+		 * ioc_inode_flush. page_fault will be generated for all 
+		 * the pages which have waiting frames by ioc_inode_wakeup()
 		 */
-		destroy_size = __ioc_inode_flush (ioc_inode);
-		if (op_ret >= 0)
-			ioc_inode->mtime = stbuf->st_mtime;
+		ioc_inode_lock (ioc_inode);
+		{
+			destroy_size = __ioc_inode_flush (ioc_inode);
+			if (op_ret >= 0)
+				ioc_inode->mtime = stbuf->st_mtime;
+		}
 		ioc_inode_unlock (ioc_inode);
 		local_stbuf = NULL;
 	}
 
 	if (destroy_size) {
 		ioc_table_lock (ioc_inode->table);
-		ioc_inode->table->cache_used -= destroy_size;
+		{
+			ioc_inode->table->cache_used -= destroy_size;
+		}
 		ioc_table_unlock (ioc_inode->table);
 	}
 
@@ -445,13 +479,16 @@ ioc_cache_validate_cbk (call_frame_t *frame,
 		local_stbuf = NULL;
   
 	ioc_inode_lock (ioc_inode);
-	gettimeofday (&ioc_inode->tv, NULL);
+	{
+		gettimeofday (&ioc_inode->tv, NULL);
+	}
 	ioc_inode_unlock (ioc_inode);
 
 	ioc_inode_wakeup (frame, ioc_inode, local_stbuf);
   
-	/* any page-fault initiated by ioc_inode_wakeup() will have its own fd_ref on fd,
-	 * safe to unref validate frame's private copy */
+	/* any page-fault initiated by ioc_inode_wakeup() will have its own 
+	 * fd_ref on fd, safe to unref validate frame's private copy 
+	 */
 	fd_unref (local->fd);
 
 	STACK_DESTROY (frame->root);
@@ -501,32 +538,22 @@ ioc_cache_validate (call_frame_t *frame,
 		    fd_t *fd,
 		    ioc_page_t *page)
 {
-	char need_validate = 0;
 	call_frame_t *validate_frame = NULL;
+	ioc_local_t *validate_local = NULL;
 
-	ioc_inode_lock (ioc_inode);
-	{
-		if (!ioc_inode->waitq) {
-			need_validate = 1;
-		}
-		ioc_wait_on_inode (ioc_inode, page);
-	}
-	ioc_inode_unlock (ioc_inode);
-  
-	if (need_validate) {
-		ioc_local_t *validate_local = CALLOC (1, sizeof (ioc_local_t));
-		ERR_ABORT (validate_local);
-		validate_frame = copy_frame (frame);
-		validate_local->fd = fd_ref (fd);
-		validate_local->inode = ioc_inode;
-		validate_frame->local = validate_local;
+	validate_local = CALLOC (1, sizeof (ioc_local_t));
+	ERR_ABORT (validate_local);
+	validate_frame = copy_frame (frame);
+	validate_local->fd = fd_ref (fd);
+	validate_local->inode = ioc_inode;
+	validate_frame->local = validate_local;
     
-		STACK_WIND (validate_frame,
-			    ioc_cache_validate_cbk,
-			    FIRST_CHILD (frame->this),
-			    FIRST_CHILD (frame->this)->fops->fstat,
-			    fd);
-	}
+	STACK_WIND (validate_frame,
+		    ioc_cache_validate_cbk,
+		    FIRST_CHILD (frame->this),
+		    FIRST_CHILD (frame->this)->fops->fstat,
+		    fd);
+
 	return 0;
 }
 
@@ -578,6 +605,7 @@ ioc_open_cbk (call_frame_t *frame,
 	      int32_t op_errno,
 	      fd_t *fd)
 {
+	uint64_t     tmp_ioc_inode = 0;
 	ioc_local_t *local = frame->local;
 	ioc_table_t *table = this->private;
 	ioc_inode_t *ioc_inode = NULL;
@@ -588,33 +616,45 @@ ioc_open_cbk (call_frame_t *frame,
 	if (op_ret != -1) {
 		/* look for ioc_inode corresponding to this fd */
 		LOCK (&fd->inode->lock);
-		ioc_inode = ioc_get_inode (fd->inode->ctx, this->name);
+		//{
+
+		inode_ctx_get (fd->inode, this, &tmp_ioc_inode);
+		ioc_inode = (ioc_inode_t *)(long)tmp_ioc_inode;
       
 		if (!ioc_inode) {
-			/* this is the first time someone is opening this file */
-			/* assign weight */
+			/* this is the first time someone is opening this 
+			   file, assign weight 
+			*/
 			weight = ioc_get_priority (table, path);
  
 			ioc_inode = ioc_inode_update (table, inode, weight);
-			dict_set (fd->inode->ctx, this->name, data_from_static_ptr (ioc_inode));
+			inode_ctx_put (fd->inode, this, 
+				       (uint64_t)(long)ioc_inode);
 		} else {
 			ioc_table_lock (ioc_inode->table);
+			//{
 			list_move_tail (&ioc_inode->inode_lru,
 					&table->inode_lru[ioc_inode->weight]);
+			//}
 			ioc_table_unlock (ioc_inode->table);
 		}
+
+		//}
 		UNLOCK (&fd->inode->lock);
 
 		/* If mandatory locking has been enabled on this file,
 		   we disable caching on it */
-		if (((inode->st_mode & S_ISGID) && !(inode->st_mode & S_IXGRP))) {
-			dict_set (fd->ctx, this->name, data_from_uint32 (1));
+		if (((inode->st_mode & S_ISGID) && 
+		     !(inode->st_mode & S_IXGRP))) {
+			fd_ctx_set (fd, this, 1);
 		}
   
 		/* If O_DIRECT open, we disable caching on it */
 		if ((local->flags & O_DIRECT)){
-			/* O_DIRECT is only for one fd, not the inode as a whole */
-			dict_set (fd->ctx, this->name, data_from_uint32 (1));
+			/* O_DIRECT is only for one fd, not the inode 
+			 * as a whole 
+			 */
+			fd_ctx_set (fd, this, 1);
 		}
 	}
 
@@ -662,20 +702,25 @@ ioc_create_cbk (call_frame_t *frame,
 
 			ioc_inode = ioc_inode_update (table, inode, weight);
 			LOCK (&fd->inode->lock);
-			dict_set (fd->inode->ctx, this->name, data_from_static_ptr (ioc_inode));
+			{
+				inode_ctx_put (fd->inode, this, 
+					       (uint64_t)(long)ioc_inode);
+			}
 			UNLOCK (&fd->inode->lock);
 		}
 		/* If mandatory locking has been enabled on this file,
 		   we disable caching on it */
 		if ((inode->st_mode & S_ISGID) && 
 		    !(inode->st_mode & S_IXGRP)) {
-			dict_set (fd->ctx, this->name, data_from_uint32 (1));
+			fd_ctx_set (fd, this, 1);
 		}
 
 		/* If O_DIRECT open, we disable caching on it */
 		if (local->flags & O_DIRECT){
-			/* O_DIRECT is only for one fd, not the inode as a whole */
-			dict_set (fd->ctx, this->name, data_from_uint32 (1));
+			/* O_DIRECT is only for one fd, not the inode 
+			 * as a whole 
+			 */
+			fd_ctx_set (fd, this, 1);
 		}
     
 	}
@@ -834,14 +879,15 @@ dispatch_requests (call_frame_t *frame,
 {
 	ioc_local_t *local = frame->local;
 	ioc_table_t *table = ioc_inode->table;
-	off_t rounded_offset = 0;
-	off_t rounded_end = 0;
-	off_t trav_offset = 0;
-	ioc_page_t *trav = NULL;
-	int32_t fault = 0;
-	int8_t might_need_validate = 0;  /* if a page exists, do we need to validate it? */
-	int8_t need_validate = 0;
+	ioc_page_t  *trav = NULL;
 	ioc_waitq_t *waitq = NULL;
+	off_t   rounded_offset = 0;
+	off_t   rounded_end = 0;
+	off_t   trav_offset = 0;
+	int32_t fault = 0;
+	int8_t  need_validate = 0;
+	int8_t  might_need_validate = 0;  /* if a page exists, do we need 
+					    to validate it? */
 
 	rounded_offset = floor (offset, table->page_size);
 	rounded_end = roof (offset + size, table->page_size);
@@ -864,11 +910,14 @@ dispatch_requests (call_frame_t *frame,
 		off_t local_offset = 0;
 
 		ioc_inode_lock (ioc_inode);
+		//{
+
 		/* look for requested region in the cache */
 		trav = ioc_page_get (ioc_inode, trav_offset);
 
 		local_offset = max (trav_offset, offset);
-		trav_size = min (((offset+size) - local_offset), table->page_size);
+		trav_size = min (((offset+size) - local_offset), 
+				 table->page_size);
 
 		if (!trav) {
 			/* page not in cache, we need to generate page fault */
@@ -887,15 +936,21 @@ dispatch_requests (call_frame_t *frame,
 			if (!might_need_validate) {
 				/* fresh enough */
 				gf_log (frame->this->name, GF_LOG_DEBUG,
-					"cache hit for trav_offset=%"PRId64"/local_offset=%"PRId64"",
+					"cache hit for trav_offset=%"PRId64""
+					"/local_offset=%"PRId64"",
 					trav_offset, local_offset);
 				waitq = ioc_page_wakeup (trav);
 			} else {
-				/* we need to validate the cache */
-				need_validate = 1;
+				/* if waitq already exists, fstat revalidate is
+				   already on the way */
+				if (!ioc_inode->waitq) {
+					need_validate = 1;
+				}
+				ioc_wait_on_inode (ioc_inode, trav);
 			}
 		}
 
+		//}
 		ioc_inode_unlock (ioc_inode);
     
 		ioc_waitq_return (waitq);
@@ -910,11 +965,11 @@ dispatch_requests (call_frame_t *frame,
 		if (need_validate) {
 			need_validate = 0;
 			gf_log (frame->this->name, GF_LOG_DEBUG,
-				"sending validate request for inode(%"PRId64") at offset=%"PRId64"",
+				"sending validate request for "
+				"inode(%"PRId64") at offset=%"PRId64"",
 				fd->inode->ino, trav_offset);
 			ioc_cache_validate (frame, ioc_inode, fd, trav);
 		}
-
     
 		trav_offset += table->page_size;
 	}
@@ -946,11 +1001,13 @@ ioc_readv (call_frame_t *frame,
 	   size_t size,
 	   off_t offset)
 {
-	ioc_inode_t *ioc_inode = ioc_get_inode (fd->inode->ctx, this->name);
+	uint64_t     tmp_ioc_inode = 0;
+	ioc_inode_t *ioc_inode = NULL;
 	ioc_local_t *local = NULL;
-	data_t *fd_ctx_data = dict_get (fd->ctx, this->name);
-	uint32_t weight = 0;
+	uint32_t     weight = 0;
 
+	inode_ctx_get (fd->inode, this, &tmp_ioc_inode);
+	ioc_inode = (ioc_inode_t *)(long)tmp_ioc_inode;
 	if (!ioc_inode) {
 		/* caching disabled, go ahead with normal readv */
 		STACK_WIND (frame, 
@@ -963,7 +1020,7 @@ ioc_readv (call_frame_t *frame,
 		return 0;
 	}
 
-	if (fd_ctx_data) {
+	if (!fd_ctx_get (fd, this, NULL)) {
 		/* disable caching for this fd, go ahead with normal readv */
 		STACK_WIND (frame, 
 			    ioc_readv_disabled_cbk,
@@ -986,15 +1043,16 @@ ioc_readv (call_frame_t *frame,
 	local->size = size;
 	local->inode = ioc_inode;
 
-	gf_log (this->name,
-		GF_LOG_DEBUG,
-		"NEW REQ (%p) offset = %"PRId64" && size = %"GF_PRI_SIZET"", frame, offset, size);
+	gf_log (this->name, GF_LOG_DEBUG,
+		"NEW REQ (%p) offset = %"PRId64" && size = %"GF_PRI_SIZET"", 
+		frame, offset, size);
 
 	weight = ioc_inode->weight;
 
 	ioc_table_lock (ioc_inode->table);
 	{
-		list_move_tail (&ioc_inode->inode_lru, &ioc_inode->table->inode_lru[weight]);
+		list_move_tail (&ioc_inode->inode_lru, 
+				&ioc_inode->table->inode_lru[weight]);
 	}
 	ioc_table_unlock (ioc_inode->table);
 
@@ -1021,11 +1079,13 @@ ioc_writev_cbk (call_frame_t *frame,
 		int32_t op_errno,
 		struct stat *stbuf)
 {
-	ioc_local_t *local = frame->local;
-	ioc_inode_t *ioc_inode = ioc_get_inode (local->fd->inode->ctx, this->name);
+	ioc_local_t *local     = frame->local;
+	uint64_t     ioc_inode = 0;
+
+	inode_ctx_get (local->fd->inode, this, &ioc_inode);
   
 	if (ioc_inode)
-		ioc_inode_flush (ioc_inode);
+		ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
 
 	STACK_UNWIND (frame, op_ret, op_errno, stbuf);
 	return 0;
@@ -1050,9 +1110,9 @@ ioc_writev (call_frame_t *frame,
 	    int32_t count,
 	    off_t offset)
 {
-	ioc_local_t *local = NULL;
-	ioc_inode_t *ioc_inode = ioc_get_inode (fd->inode->ctx, this->name);
-
+	ioc_local_t *local     = NULL;
+	uint64_t     ioc_inode = 0;
+	
 	local = CALLOC (1, sizeof (ioc_local_t));
 	ERR_ABORT (local);
 
@@ -1060,8 +1120,9 @@ ioc_writev (call_frame_t *frame,
 	local->fd = fd;
 	frame->local = local;
 
+	inode_ctx_get (fd->inode, this, &ioc_inode);
 	if (ioc_inode)
-		ioc_inode_flush (ioc_inode);
+		ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
 
 	STACK_WIND (frame,
 		    ioc_writev_cbk,
@@ -1114,10 +1175,11 @@ ioc_truncate (call_frame_t *frame,
 	      loc_t *loc,
 	      off_t offset)
 {
-	ioc_inode_t *ioc_inode =  ioc_get_inode (loc->inode->ctx, this->name);
+	uint64_t ioc_inode = 0;
+	inode_ctx_get (loc->inode, this, &ioc_inode);
 
 	if (ioc_inode)
-		ioc_inode_flush (ioc_inode);
+		ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
 
 	STACK_WIND (frame,
 		    ioc_truncate_cbk,
@@ -1143,10 +1205,11 @@ ioc_ftruncate (call_frame_t *frame,
 	       fd_t *fd,
 	       off_t offset)
 {
-	ioc_inode_t *ioc_inode = ioc_get_inode (fd->inode->ctx, this->name);
-  
+	uint64_t ioc_inode = 0;
+	inode_ctx_get (fd->inode, this, &ioc_inode);
+
 	if (ioc_inode)
-		ioc_inode_flush (ioc_inode);
+		ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
 
 	STACK_WIND (frame,
 		    ioc_truncate_cbk,
@@ -1176,16 +1239,22 @@ ioc_lk (call_frame_t *frame,
 	int32_t cmd,
 	struct flock *lock)
 {
-	ioc_inode_t *ioc_inode = ioc_get_inode (fd->inode->ctx, this->name);
+	ioc_inode_t *ioc_inode = NULL;
+	uint64_t     tmp_inode = 0;
 
+	inode_ctx_get (fd->inode, this, &tmp_inode);
+	ioc_inode = (ioc_inode_t *)(long)tmp_inode;
 	if (!ioc_inode) {
 		gf_log (this->name, GF_LOG_ERROR,
 			"inode context is NULL: returning EBADFD");
 		STACK_UNWIND (frame, -1, EBADFD, NULL);
+		return 0;
 	}
 
 	ioc_inode_lock (ioc_inode);
-	gettimeofday (&ioc_inode->tv, NULL);
+	{
+		gettimeofday (&ioc_inode->tv, NULL);
+	}
 	ioc_inode_unlock (ioc_inode);
 
 	STACK_WIND (frame, ioc_lk_cbk, 
@@ -1208,9 +1277,12 @@ ioc_get_priority_list (const char *opt_str, struct list_head *first)
 	char *string = strdup (opt_str);
 	struct ioc_priority *curr = NULL;
 
-	/* Get the pattern for cache priority. "option priority *.jpg:1,abc*:2" etc */
-	/* TODO: inode_lru in table is statically hard-coded to 5, should be changed to 
-	 *      run-time configuration */
+	/* Get the pattern for cache priority. 
+	 * "option priority *.jpg:1,abc*:2" etc 
+	 */
+	/* TODO: inode_lru in table is statically hard-coded to 5, 
+	 * should be changed to run-time configuration 
+	 */
 	stripe_str = strtok_r (string, ",", &tmp_str);
 	while (stripe_str) {
 		curr = CALLOC (1, sizeof (struct ioc_priority));
@@ -1257,7 +1329,8 @@ init (xlator_t *this)
 
 	if (!this->children || this->children->next) {
 		gf_log (this->name, GF_LOG_ERROR,
-			"FATAL: io-cache not configured with exactly one child");
+			"FATAL: io-cache not configured with exactly "
+			"one child");
 		return -1;
 	}
 
@@ -1274,15 +1347,15 @@ init (xlator_t *this)
 	table->cache_size = IOC_CACHE_SIZE;
 
 	if (dict_get (options, "page-size"))
-		page_size_string = data_to_str (dict_get (options, "page-size"));
+		page_size_string = data_to_str (dict_get (options, 
+							  "page-size"));
 
-	if (page_size_string)
-	{
-		if (gf_string2bytesize (page_size_string, &table->page_size) != 0)
-		{
-			gf_log ("io-cache", 
-				GF_LOG_ERROR, 
-				"invalid number format \"%s\" of \"option page-size\"", 
+	if (page_size_string) {
+		if (gf_string2bytesize (page_size_string, 
+					&table->page_size) != 0) {
+			gf_log ("io-cache", GF_LOG_ERROR, 
+				"invalid number format \"%s\" of "
+				"\"option page-size\"", 
 				page_size_string);
 			return -1;
 		}
@@ -1293,13 +1366,12 @@ init (xlator_t *this)
 	if (dict_get (options, "cache-size"))
 		cache_size_string = data_to_str (dict_get (options, 
 							   "cache-size"));
-	if (cache_size_string)
-	{
-		if (gf_string2bytesize (cache_size_string, &table->cache_size) != 0)
-		{
-			gf_log ("io-cache", 
-				GF_LOG_ERROR, 
-				"invalid number format \"%s\" of \"option cache-size\"", 
+	if (cache_size_string) {
+		if (gf_string2bytesize (cache_size_string, 
+					&table->cache_size) != 0) {
+			gf_log ("io-cache", GF_LOG_ERROR, 
+				"invalid number format \"%s\" of "
+				"\"option cache-size\"", 
 				cache_size_string);
 			return -1;
 		}
@@ -1321,12 +1393,13 @@ init (xlator_t *this)
 
 	INIT_LIST_HEAD (&table->priority_list);
 	if (dict_get (options, "priority")) {
-		char *option_list = data_to_str (dict_get (options, "priority"));
-		gf_log (this->name,
-			GF_LOG_DEBUG,
+		char *option_list = data_to_str (dict_get (options, 
+							   "priority"));
+		gf_log (this->name, GF_LOG_DEBUG,
 			"option path %s", option_list);
 		/* parse the list of pattern:priority */
-		table->max_pri = ioc_get_priority_list (option_list, &table->priority_list);
+		table->max_pri = ioc_get_priority_list (option_list, 
+							&table->priority_list);
     
 		if (table->max_pri == -1)
 			return -1;

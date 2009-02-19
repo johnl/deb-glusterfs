@@ -80,7 +80,7 @@ nufa_local_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 			goto err;
 		}
 
-                inode_ctx_set (inode, this, layout);
+                inode_ctx_put (inode, this, (uint64_t)(long)layout);
                 goto out;
         }
 
@@ -107,7 +107,7 @@ nufa_local_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         STACK_WIND (frame, dht_lookup_dir_cbk,
                                     conf->subvolumes[i],
                                     conf->subvolumes[i]->fops->lookup,
-                                    &local->loc, 1);
+                                    &local->loc, local->xattr_req);
                 }
         }
 
@@ -124,7 +124,7 @@ nufa_local_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 		STACK_WIND (frame, dht_lookup_linkfile_cbk,
 			    subvol, subvol->fops->lookup,
-			    &local->loc, 1);
+			    &local->loc, local->xattr_req);
         }
 
         return 0;
@@ -140,7 +140,7 @@ out:
 		
 	STACK_WIND (frame, dht_lookup_cbk,
 		    local->hashed_subvol, local->hashed_subvol->fops->lookup,
-		    &local->loc, 1);
+		    &local->loc, local->xattr_req);
 
 	return 0;
 
@@ -151,7 +151,7 @@ out:
 
 int
 nufa_lookup (call_frame_t *frame, xlator_t *this,
-	     loc_t *loc, int need_xattr)
+	     loc_t *loc, dict_t *xattr_req)
 {
         xlator_t     *hashed_subvol = NULL;
         xlator_t     *cached_subvol = NULL;
@@ -190,6 +190,12 @@ nufa_lookup (call_frame_t *frame, xlator_t *this,
                 goto err;
         }
 
+	if (xattr_req) {
+		local->xattr_req = dict_ref (xattr_req);
+	} else {
+		local->xattr_req = dict_new ();
+	}
+
 	hashed_subvol = dht_subvol_get_hashed (this, &local->loc);
 	cached_subvol = dht_subvol_get_cached (this, local->loc.inode);
 	
@@ -221,22 +227,34 @@ nufa_lookup (call_frame_t *frame, xlator_t *this,
 		local->call_cnt = layout->cnt;
 		call_cnt = local->call_cnt;
 		
+		/* NOTE: we don't require 'trusted.glusterfs.dht.linkto' attribute,
+		 *       revalidates directly go to the cached-subvolume.
+		 */
+		ret = dict_set_uint32 (local->xattr_req, 
+				       "trusted.glusterfs.dht", 4 * 4);
+
 		for (i = 0; i < layout->cnt; i++) {
 			subvol = layout->list[i].xlator;
-
+			
 			STACK_WIND (frame, dht_revalidate_cbk,
 				    subvol, subvol->fops->lookup,
-				    loc, need_xattr);
+				    loc, local->xattr_req);
 
 			if (!--call_cnt)
 				break;
 		}
 	} else {
+		ret = dict_set_uint32 (local->xattr_req, 
+				       "trusted.glusterfs.dht", 4 * 4);
+
+		ret = dict_set_uint32 (local->xattr_req, 
+				       "trusted.glusterfs.dht.linkto", 256);
+
 		/* Send it to only local volume */
 		STACK_WIND (frame, nufa_local_lookup_cbk,
 			    conf->local_volume, 
 			    conf->local_volume->fops->lookup,
-			    loc, 1);
+			    loc, local->xattr_req);
 	}
 
         return 0;
@@ -490,6 +508,7 @@ init (xlator_t *this)
 	char          *lookup_unhashed_str = NULL;
         int            ret = -1;
         int            i = 0;
+	char           my_hostname[256];
 
 	if (!this->children) {
 		gf_log (this->name, GF_LOG_ERROR,
@@ -514,7 +533,7 @@ init (xlator_t *this)
 	if (dict_get_str (this->options, "lookup-unhashed",
 			  &lookup_unhashed_str) == 0) {
 		gf_string2boolean (lookup_unhashed_str,
-				   (gf_boolean_t *)&conf->search_unhashed);
+				   &conf->search_unhashed);
 	}
 
         ret = dht_init_subvolumes (this, conf);
@@ -531,25 +550,35 @@ init (xlator_t *this)
 
 	conf->gen = 1;
 
+	local_volname = "localhost";
+	ret = gethostname (my_hostname, 256);
+	if (ret < 0) {
+		gf_log (this->name, GF_LOG_WARNING,
+			"could not find hostname (%s)",
+			strerror (errno));
+	}
+
+	if (ret == 0)
+		local_volname = my_hostname;
+
 	data = dict_get (this->options, "local-volume-name");
 	if (data) {
 		local_volname = data->data;
-	} else {
-		gf_log (this->name, GF_LOG_ERROR, 
-			"'local-volume-name' option not given, "
-			"assuming '$(hostname)'");
-		local_volname = NULL; /* TODO: get hostname */
 	}
+
 	trav = this->children;
 	while (trav) {
 		if (strcmp (trav->xlator->name, local_volname) == 0)
 			break;
 		trav = trav->next;
 	}
+
 	if (!trav) {
 		gf_log (this->name, GF_LOG_ERROR, 
-			"'local-volume-name' option not valid, "
-			"can not continue");
+			"Could not find subvolume named '%s'. "
+			"Please define volume with the name as the hostname "
+			"or override it with 'option local-volume-name'",
+			local_volname);
 		goto err;
 	}
 	/* The volume specified exists */

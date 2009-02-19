@@ -32,9 +32,6 @@
 #include "compat-errno.h"
 #include "common-utils.h"
 
-
-#define VOID(ptr) ((void **) ((void *) ptr))
-
 struct symlink_cache {
 	time_t ctime;
 	char   *readlink;
@@ -42,22 +39,25 @@ struct symlink_cache {
 
 
 static int
-inode_ctx_get (inode_t *inode, xlator_t *this, void **ctx)
+symlink_inode_ctx_get (inode_t *inode, xlator_t *this, void **ctx)
 {
 	int ret = 0;
-	ret = dict_get_ptr (inode->ctx, this->name, ctx);
+	uint64_t tmp_ctx = 0;
+	ret = inode_ctx_get (inode, this, &tmp_ctx);
 	if (-1 == ret)
 		gf_log (this->name, GF_LOG_ERROR, "dict get failed");
+	else
+		*ctx = (void *)(long)tmp_ctx;
 
 	return 0;
 }
 
 
 static int
-inode_ctx_set (inode_t *inode, xlator_t *this, void *ctx)
+symlink_inode_ctx_set (inode_t *inode, xlator_t *this, void *ctx)
 {
 	int ret = 0;
-	ret = dict_set_static_ptr (inode->ctx, this->name, ctx);
+	ret = inode_ctx_put (inode, this, (uint64_t)(long) ctx);
 	if (-1 == ret)
 		gf_log (this->name, GF_LOG_ERROR, "dict set failed");
 
@@ -70,7 +70,7 @@ sc_cache_update (xlator_t *this, inode_t *inode, const char *link)
 {
 	struct symlink_cache *sc = NULL;
 
-	inode_ctx_get (inode, this, VOID(&sc));
+	symlink_inode_ctx_get (inode, this, VOID(&sc));
 	if (!sc)
 		return 0;
 
@@ -98,7 +98,7 @@ sc_cache_set (xlator_t *this, inode_t *inode, struct stat *buf,
 	int                   need_set = 0;
 
 
-	inode_ctx_get (inode, this, VOID(&sc));
+	symlink_inode_ctx_get (inode, this, VOID(&sc));
 	if (!sc) {
 		need_set = 1;
 		sc = CALLOC (1, sizeof (*sc));
@@ -132,7 +132,7 @@ sc_cache_set (xlator_t *this, inode_t *inode, struct stat *buf,
 		"setting symlink cache: %s", link);
 
 	if (need_set) {
-		ret = inode_ctx_set (inode, this, sc);
+		ret = symlink_inode_ctx_set (inode, this, sc);
 
 		if (ret < 0) {
 			gf_log (this->name, GF_LOG_ERROR,
@@ -161,7 +161,7 @@ sc_cache_flush (xlator_t *this, inode_t *inode)
 {
 	struct symlink_cache *sc = NULL;
 
-	inode_ctx_get (inode, this, VOID(&sc));
+	symlink_inode_ctx_get (inode, this, VOID(&sc));
 	if (!sc)
 		return 0;
 
@@ -183,24 +183,25 @@ int
 sc_cache_validate (xlator_t *this, inode_t *inode, struct stat *buf)
 {
 	struct symlink_cache *sc = NULL;
-
+	uint64_t tmp_sc = 0;
 
 	if (!S_ISLNK (buf->st_mode)) {
 		sc_cache_flush (this, inode);
 		return 0;
 	}
 
-	inode_ctx_get (inode, this, VOID(&sc));
+	symlink_inode_ctx_get (inode, this, VOID(&sc));
 
 	if (!sc) {
 		sc_cache_set (this, inode, buf, NULL);
-		inode_ctx_get (inode, this, VOID(&sc));
+		inode_ctx_get (inode, this, &tmp_sc);
 
 		if (!sc) {
 			gf_log (this->name, GF_LOG_ERROR,
 				"out of memory :(");
 			return 0;
 		}
+		sc = (struct symlink_cache *)(long)tmp_sc;
 	}
 
 	if (sc->ctime == buf->st_ctime)
@@ -227,7 +228,7 @@ sc_cache_get (xlator_t *this, inode_t *inode, char **link)
 {
 	struct symlink_cache *sc = NULL;
 
-	inode_ctx_get (inode, this, VOID(&sc));
+	symlink_inode_ctx_get (inode, this, VOID(&sc));
 
 	if (!sc)
 		return 0;
@@ -331,12 +332,12 @@ sc_lookup_cbk (call_frame_t *frame, void *cookie,
 
 int
 sc_lookup (call_frame_t *frame, xlator_t *this,
-	   loc_t *loc, int need_xattr)
+	   loc_t *loc, dict_t *xattr_req)
 {
         STACK_WIND (frame, sc_lookup_cbk,
                     FIRST_CHILD(this),
                     FIRST_CHILD(this)->fops->lookup,
-                    loc, need_xattr);
+                    loc, xattr_req);
 
         return 0;
 }

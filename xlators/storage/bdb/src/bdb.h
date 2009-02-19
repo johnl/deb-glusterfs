@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+  Copyright (c) 2008, 2009 Z RESEARCH, Inc. <http://www.zresearch.com>
   This file is part of GlusterFS.
 
   GlusterFS is free software; you can redistribute it and/or modify
@@ -133,9 +133,9 @@
  * bdb xlator reserves file names 'glusterfs_storage.db', 
  * 'glusterfs_ns.db'(used by bdb xlator itself), 'log.*', '__db.*' (used by libdb)
  */
-#define IS_BDB_PRIVATE_FILE(name) ((!strncmp(name, "__db.", 5)) ||	\
+#define IS_BDB_PRIVATE_FILE(name) ((!strncmp(name, "__db.", 5)) ||	      \
                                    (!strcmp(name, "glusterfs_storage.db")) || \
-                                   (!strcmp(name, "glusterfs_ns.db")) || \
+                                   (!strcmp(name, "glusterfs_ns.db")) ||      \
                                    (!strncmp(name, "log.0000", 8)))
 
 /* check if 'name' is '.' or '..' entry */
@@ -143,32 +143,34 @@
 
 /* BDB_SET_BCTX(this,inode,bctx)
  * put a stamp on inode. d00d, you are using bdb.. huhaha.
- * pointer to 'struct bdb_ctx' is stored in inode->ctx of all directories. 
+ * pointer to 'struct bdb_ctx' is stored in inode's ctx of all directories. 
  * this will happen either in lookup() or mkdir().
  *
  * @this:  pointer xlator_t of bdb xlator.
- * @inode: inode to whose ->ctx, 'struct bdb_ctx *' has to be stored.
+ * @inode: inode where 'struct bdb_ctx *' has to be stored.
  * @bctx:  a 'struct bdb_ctx *'
  */
-#define BDB_SET_BCTX(this,inode,bctx) do{				\
-		dict_set(inode->ctx, this->name, data_from_static_ptr (bctx)); \
+#define BDB_SET_BCTX(this,inode,bctx) do{                         \
+		inode_ctx_put(inode, this, (uint64_t)(long)bctx); \
 	}while (0);
 
 /* MAKE_BCTX_FROM_INODE(this,bctx,inode)
- * extract bdb xlator's 'struct bdb_ctx *' from an inode->ctx.
+ * extract bdb xlator's 'struct bdb_ctx *' from an inode's ctx.
  * valid only if done for directory inodes, otherwise bctx = NULL.
  *
  * @this:  pointer xlator_t of bdb xlator.
  * @bctx:  a 'struct bdb_ctx *'
- * @inode: inode from whose ->ctx, 'struct bdb_ctx *' has to be extracted. 
+ * @inode: inode from where 'struct bdb_ctx *' has to be extracted. 
  */
-#define MAKE_BCTX_FROM_INODE(this,bctx,inode) do{			\
-		data_t *data = dict_get (inode->ctx, this->name);	\
-		bctx = data_to_ptr (data);				\
+#define MAKE_BCTX_FROM_INODE(this,bctx,inode) do{        \
+                uint64_t tmp_bctx = 0;                   \
+                inode_ctx_get (inode, this, &tmp_bctx);  \
+                if (ret == 0)                            \
+		        bctx = (void *)(long)tmp_bctx;   \
 	}while (0);
 
-#define BDB_SET_BFD(this,fd,bfd) do{					\
-		dict_set(fd->ctx, this->name, data_from_static_ptr (bfd)); \
+#define BDB_SET_BFD(this,fd,bfd) do{		            \
+		fd_ctx_set (fd, this, (uint64_t)(long)bfd); \
 	}while (0);
 
 /* maximum number of open dbs that bdb xlator will ever have */
@@ -342,8 +344,7 @@ bdb_txn_commit (DB_TXN *txnid)
 }
 
 inline void *
-bdb_extract_bfd (fd_t *fd,
-		 char *name);
+bdb_extract_bfd (fd_t *fd, xlator_t *this);
 
 
 void *
