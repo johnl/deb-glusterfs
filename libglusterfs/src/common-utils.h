@@ -117,6 +117,9 @@ extern char *gf_cbk_list[GF_CBK_MAXVALUE];
 	} while (0); 
 
 
+#define GF_FILE_CONTENT_REQUESTED(_xattr_req,_content_limit) \
+	(dict_get_uint64 (_xattr_req, "glusterfs.content", _content_limit) == 0)
+
 static inline void
 iov_free (struct iovec *vector, int count)
 {
@@ -220,6 +223,38 @@ iov_unload (char *buf, const struct iovec *vector, int count)
 		memcpy (buf + copied, vector[i].iov_base, vector[i].iov_len);
 		copied += vector[i].iov_len;
 	}
+}
+
+
+static inline int
+mem_0filled (const char *buf, size_t size)
+{
+	int i = 0;
+	int ret = 0;
+
+	for (i = 0; i < size; i++) {
+		ret = buf[i];
+		if (ret)
+			break;
+	}
+
+	return ret;
+}
+
+
+static inline int
+iov_0filled (struct iovec *vector, int count)
+{
+	int i = 0;
+	int ret = 0;
+
+	for (i = 0; i < count; i++) {
+		ret = mem_0filled (vector[i].iov_base, vector[i].iov_len);
+		if (ret)
+			break;
+	}
+
+	return ret;
 }
 
 

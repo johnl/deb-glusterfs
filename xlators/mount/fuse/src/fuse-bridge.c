@@ -53,7 +53,7 @@
 /* TODO: when supporting posix acl, remove this definition */
 #define DISABLE_POSIX_ACL
 
-#define ZR_MOUNTPOINT_OPT   "mount-point"
+#define ZR_MOUNTPOINT_OPT   "mountpoint"
 #define ZR_DIRECT_IO_OPT    "direct-io-mode"
 
 #define BIG_FUSE_CHANNEL_SIZE 1048576
@@ -275,8 +275,8 @@ fuse_loc_fill (loc_t *loc,
 	if ((ino != 1) &&
 	    (parent == NULL)) {
 		gf_log ("fuse-bridge", GF_LOG_ERROR,
-			"failed to search parent for %"PRId64" (%s)",
-			(ino_t)ino, name);
+			"failed to search parent for %"PRId64"/%s (%"PRId64")",
+			(ino_t)par, name, (ino_t)ino);
 		ret = -1;
 		goto fail;
 	}
@@ -356,7 +356,7 @@ fuse_entry_cbk (call_frame_t *frame,
                 STACK_WIND (frame, fuse_lookup_cbk,
                             FIRST_CHILD (this),
 			    FIRST_CHILD (this)->fops->lookup,
-                            &state->loc, 0);
+                            &state->loc, state->dict);
 
                 return 0;
         }
@@ -433,7 +433,7 @@ fuse_lookup (fuse_req_t req,
 {
         fuse_state_t *state;
 	int32_t ret = -1;
-
+	
         state = state_from_req (req);
 
         ret = fuse_loc_fill (&state->loc, state, 0, par, name);
@@ -461,9 +461,11 @@ fuse_lookup (fuse_req_t req,
                         state->loc.path, state->loc.inode->ino);
                 state->is_revalidate = 1;
         }
+	
+	state->dict = dict_new();
 
         FUSE_FOP (state, fuse_lookup_cbk, GF_FOP_LOOKUP,
-                  lookup, &state->loc, 0);
+                  lookup, &state->loc, state->dict);
 }
 
 
@@ -567,8 +569,11 @@ fuse_getattr (fuse_req_t req,
                         state->is_revalidate = 1;
                 else
                         state->is_revalidate = -1;
+
+		state->dict = dict_new();
+
                 FUSE_FOP (state, fuse_lookup_cbk, GF_FOP_LOOKUP,
-                          lookup, &state->loc, 0);
+                          lookup, &state->loc, state->dict);
                 return;
         }
 
@@ -903,6 +908,10 @@ fuse_err_cbk (call_frame_t *frame,
 						"[ ERROR ] Extended attribute not supported by the backend storage");
 			}
                 } else {
+			if ((frame->root->op == GF_FOP_REMOVEXATTR)
+			    && (op_errno == ENOATTR)) {
+				goto nolog;
+			}
                         gf_log ("glusterfs-fuse", GF_LOG_ERROR,
                                 "%"PRId64": %s() %s => -1 (%s)",
 				frame->root->unique,
@@ -910,6 +919,8 @@ fuse_err_cbk (call_frame_t *frame,
 				state->loc.path ? state->loc.path : "ERR",
                                 strerror (op_errno));
                 }
+	nolog:
+
                 fuse_reply_err (req, op_errno);
         }
 
@@ -1399,16 +1410,18 @@ fuse_create_cbk (call_frame_t *frame,
 
 		inode_link (inode, state->loc.parent,
 			    state->loc.name, buf);
+		
+		inode_lookup (inode);
 
 		fd_ref (fd);
                 if (fuse_reply_create (req, &e, &fi) == -ENOENT) {
                         gf_log ("glusterfs-fuse", GF_LOG_WARNING,
 				"create() got EINTR");
+			inode_forget (inode, 1);
 			fd_unref (fd);
 			goto out;
                 } 
 
-		inode_lookup (inode);
 		fd_bind (fd);
         } else {
                 gf_log ("glusterfs-fuse", GF_LOG_ERROR,
@@ -2546,16 +2559,21 @@ notify (xlator_t *this, int32_t event,
         case GF_EVENT_CHILD_UP:
 
 #ifndef GF_DARWIN_HOST_OS
-                /* This is because macfuse sends statfs() once the fuse thread
-                   gets activated, and by that time if the client is not connected,
-                   it give 'Device not configured' error. Hence, create thread only when 
-                   client sends CHILD_UP (ie, client is connected).
-                */
+		/* 
+		 * This is because macfuse sends statfs() once the fuse thread
+                 * gets activated, and by that time if the client is not 
+		 * connected, it give 'Device not configured' error. Hence, 
+		 * create thread only when client sends CHILD_UP (ie, client 
+		 * is connected).
+		 */
 
-                /* TODO: somehow, try to get the mountpoint active as soon as init()
-                   is complete, so that the hang effect when the server is not not
-                   started is removed. */
-        case GF_EVENT_CHILD_CONNECTING: 
+                /* TODO: somehow, try to get the mountpoint active as soon as 
+		 * init() is complete, so that the hang effect when the 
+		 * server is not not started is removed. 
+		 */
+		
+		/* This code causes problem with 'automount' too */
+		/* case GF_EVENT_CHILD_CONNECTING: */
 #endif /* DARWIN */
 
         {
@@ -2670,7 +2688,7 @@ init (xlator_t *this_xl)
 	ret = dict_get_str (options, ZR_MOUNTPOINT_OPT, &value_string);
 	if (value_string == NULL) {
                 gf_log ("fuse", GF_LOG_ERROR, 
-			"mandatory option mount-point is not specified");
+			"mandatory option mountpoint is not specified");
 		return -1;
 	}
 
@@ -2681,7 +2699,7 @@ init (xlator_t *this_xl)
 				ZR_MOUNTPOINT_OPT, value_string);
 		} else if (errno == ENOTCONN) {
 			gf_log (this_xl->name, GF_LOG_ERROR ,
-				"mount-point %s seems to have a stale "
+				"mountpoint %s seems to have a stale "
 				"mount, run 'umount %s' and try again",
 				value_string, value_string);
 		} else {
@@ -2824,7 +2842,7 @@ struct volume_options options[] = {
 	{ .key  = {"macfuse-local"}, 
 	  .type = GF_OPTION_TYPE_BOOL 
 	},
-	{ .key  = {"mount-point", "mountpoint"}, 
+	{ .key  = {"mountpoint", "mount-point"}, 
 	  .type = GF_OPTION_TYPE_PATH 
 	},
 	{ .key  = {"attribute-timeout"}, 

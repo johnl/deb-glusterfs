@@ -52,10 +52,18 @@ dht_lookup_selfheal_cbk (call_frame_t *frame, void *cookie,
 
 	if (ret == 0) {
 		layout = local->selfheal.layout;
-		ret = inode_ctx_set (local->inode, this, layout);
+		ret = inode_ctx_put (local->inode, this, (uint64_t)(long)layout);
 
 		if (ret == 0)
 			local->selfheal.layout = NULL;
+		
+		if (local->st_ino) {
+			local->stbuf.st_ino = local->st_ino;
+		} else {
+			gf_log (this->name, GF_LOG_WARNING,
+				"could not find hashed subvolume for %s",
+				local->loc.path);
+		}
 	}
 
 	DHT_STACK_UNWIND (frame, ret, local->op_errno, local->inode,
@@ -99,6 +107,7 @@ dht_lookup_dir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 					op_ret, op_errno, xattr);
 
 		if (op_ret == -1) {
+			local->op_errno = ENOENT;
 			gf_log (this->name, GF_LOG_WARNING,
 				"lookup of %s on %s returned error (%s)",
 				local->loc.path, prev->this->name,
@@ -106,9 +115,11 @@ dht_lookup_dir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 			goto unlock;
 		}
+
  		is_dir = check_is_dir (inode, stbuf, xattr);
- 		if (!is_dir)
+ 		if (!is_dir) 
  			goto unlock;
+
  		local->op_ret = 0;
  		if (local->xattr == NULL)
  			local->xattr = dict_ref (xattr);
@@ -116,6 +127,10 @@ dht_lookup_dir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
  			local->inode = inode_ref (inode);
 
 		dht_stat_merge (this, &local->stbuf, stbuf, prev->this);
+
+		if (prev->this == local->hashed_subvol)
+			local->st_ino = local->stbuf.st_ino;
+
         }
 unlock:
         UNLOCK (&frame->lock);
@@ -137,8 +152,16 @@ unlock:
 					local->loc.path);
 				goto selfheal;
 			}
-
-			inode_ctx_set (local->inode, this, layout);
+			
+			inode_ctx_put (local->inode, this, (uint64_t)(long)layout);
+			
+			if (local->st_ino) {
+				local->stbuf.st_ino = local->st_ino;
+			} else {
+				gf_log (this->name, GF_LOG_WARNING,
+					"could not find hashed subvolume for %s",
+					local->loc.path);
+			}
 		}
 
 		DHT_STACK_UNWIND (frame, local->op_ret, local->op_errno,
@@ -154,7 +177,6 @@ selfheal:
 	return 0;
 }
 
-
 int
 dht_revalidate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                     int op_ret, int op_errno,
@@ -164,11 +186,12 @@ dht_revalidate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         int           this_call_cnt = 0;
         call_frame_t *prev          = NULL;
 	dht_layout_t *layout        = NULL;
-
+	int           ret  = -1;
+	int           is_dir = 0;
+	int           is_linkfile = 0;
 
         local = frame->local;
         prev  = cookie;
-	layout = local->layout;
 
         LOCK (&frame->lock);
         {
@@ -197,8 +220,37 @@ dht_revalidate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 			goto unlock;
 		}
 
-		dht_stat_merge (this, &local->stbuf, stbuf, prev->this);
+		layout = dht_layout_get (this, inode);
+		
+		is_dir = check_is_dir (inode, stbuf, xattr);
+		is_linkfile = check_is_linkfile (inode, stbuf, xattr);
+		
+		if (is_linkfile) {
+			gf_log (this->name, GF_LOG_WARNING,
+				"linkfile found in revalidate for %s",
+				local->loc.path);
+			local->layout_mismatch = 1;
 
+			goto unlock;
+		}
+
+		if (is_dir) {
+			ret = dht_layout_dir_mismatch (this, layout,
+						       prev->this, &local->loc,
+						       xattr);
+			if (ret != 0) {
+				gf_log (this->name, GF_LOG_WARNING,
+					"mismatching layouts for %s", 
+					local->loc.path);
+			
+				local->layout_mismatch = 1;
+
+				goto unlock;
+			}
+		} 
+		
+		dht_stat_merge (this, &local->stbuf, stbuf, prev->this);
+		
 		local->op_ret = 0;
 		local->stbuf.st_ino = local->st_ino;
 
@@ -215,6 +267,12 @@ unlock:
 		    && (local->hashed_subvol != local->cached_subvol)
 		    && (local->stbuf.st_nlink == 1))
 			local->stbuf.st_mode |= S_ISVTX;
+		
+		if (local->layout_mismatch) {
+			local->op_ret = -1;
+			local->op_errno = ESTALE;
+		}
+			
 		DHT_STACK_UNWIND (frame, local->op_ret, local->op_errno,
 				  local->inode, &local->stbuf, local->xattr);
 	}
@@ -246,7 +304,7 @@ dht_lookup_linkfile_create_cbk (call_frame_t *frame, void *cookie,
 		goto unwind;
 	}
 
-	inode_ctx_set (local->inode, this, layout);
+	inode_ctx_put (local->inode, this, (uint64_t)(long)layout);
 	local->op_ret = 0;
 	if (local->stbuf.st_nlink == 1)
 		local->stbuf.st_mode |= S_ISVTX;
@@ -373,7 +431,7 @@ dht_lookup_everywhere (call_frame_t *frame, xlator_t *this, loc_t *loc)
 		STACK_WIND (frame, dht_lookup_everywhere_cbk,
 			    conf->subvolumes[i],
 			    conf->subvolumes[i]->fops->lookup,
-			    loc, 1);
+			    loc, local->xattr_req);
 	}
 
 	return 0;
@@ -422,7 +480,7 @@ dht_lookup_linkfile_cbk (call_frame_t *frame, void *cookie,
 		goto out;
 	}
 
-	inode_ctx_set (inode, this, layout);
+	inode_ctx_put (inode, this, (uint64_t)(long)layout);
 
 out:
         DHT_STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf, xattr);
@@ -461,6 +519,7 @@ dht_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 			return 0;
 		}
 	}
+
  	if (op_ret == 0) {
  		is_dir      = check_is_dir (inode, stbuf, xattr);
  		if (is_dir) {
@@ -468,6 +527,7 @@ dht_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
  			local->xattr = dict_ref (xattr);
  		}
  	}
+
  	if (is_dir || (op_ret == -1 && op_errno == ENOTCONN)) {
 		call_cnt        = conf->subvolume_cnt;
  		local->call_cnt = call_cnt;
@@ -485,7 +545,7 @@ dht_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 			STACK_WIND (frame, dht_lookup_dir_cbk,
 				    conf->subvolumes[i],
 				    conf->subvolumes[i]->fops->lookup,
-				    &local->loc, 1);
+				    &local->loc, local->xattr_req);
 		}
  		return 0;
  	}
@@ -512,7 +572,7 @@ dht_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 			goto out;
 		}
 
-                inode_ctx_set (inode, this, layout);
+                inode_ctx_put (inode, this, (uint64_t)(long)layout);
                 goto out;
         }
 
@@ -529,7 +589,7 @@ dht_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 		STACK_WIND (frame, dht_lookup_linkfile_cbk,
 			    subvol, subvol->fops->lookup,
-			    &local->loc, 1);
+			    &local->loc, local->xattr_req);
         }
 
         return 0;
@@ -542,7 +602,7 @@ out:
 
 int
 dht_lookup (call_frame_t *frame, xlator_t *this,
-            loc_t *loc, int need_xattr)
+            loc_t *loc, dict_t *xattr_req)
 {
         xlator_t     *subvol = NULL;
         xlator_t     *hashed_subvol = NULL;
@@ -580,6 +640,12 @@ dht_lookup (call_frame_t *frame, xlator_t *this,
                         loc->path);
                 goto err;
         }
+	
+	if (xattr_req) {
+		local->xattr_req = dict_ref (xattr_req);
+	} else {
+		local->xattr_req = dict_new ();
+	}
 
 	hashed_subvol = dht_subvol_get_hashed (this, loc);
 	cached_subvol = dht_subvol_get_cached (this, loc->inode);
@@ -608,21 +674,34 @@ dht_lookup (call_frame_t *frame, xlator_t *this,
 
 		local->inode    = inode_ref (loc->inode);
 		local->st_ino   = loc->inode->ino;
-
+		
 		local->call_cnt = layout->cnt;
 		call_cnt = local->call_cnt;
 		
+		/* NOTE: we don't require 'trusted.glusterfs.dht.linkto' attribute,
+		 *       revalidates directly go to the cached-subvolume.
+		 */
+		ret = dict_set_uint32 (local->xattr_req, 
+				       "trusted.glusterfs.dht", 4 * 4);
+
 		for (i = 0; i < layout->cnt; i++) {
 			subvol = layout->list[i].xlator;
-
+			
 			STACK_WIND (frame, dht_revalidate_cbk,
 				    subvol, subvol->fops->lookup,
-				    loc, need_xattr);
+				    loc, local->xattr_req);
 
 			if (!--call_cnt)
 				break;
 		}
         } else {
+		/* TODO: remove the hard-coding */
+		ret = dict_set_uint32 (local->xattr_req, 
+				       "trusted.glusterfs.dht", 4 * 4);
+
+		ret = dict_set_uint32 (local->xattr_req, 
+				       "trusted.glusterfs.dht.linkto", 256);
+
                 if (!hashed_subvol) {
 			gf_log (this->name, GF_LOG_ERROR,
 				"no subvolume in layout for path=%s, "
@@ -638,19 +717,19 @@ dht_lookup (call_frame_t *frame, xlator_t *this,
  					"memory allocation failed :(");
  				goto err;
  			}
- 
- 			for (i = 0; i < call_cnt; i++) {
+
+			for (i = 0; i < call_cnt; i++) {
  				STACK_WIND (frame, dht_lookup_dir_cbk,
  					    conf->subvolumes[i],
  					    conf->subvolumes[i]->fops->lookup,
- 					    &local->loc, 1);
+ 					    &local->loc, local->xattr_req);
  			}
  			return 0;
                 }
 
                 STACK_WIND (frame, dht_lookup_cbk,
                             hashed_subvol, hashed_subvol->fops->lookup,
-                            loc, 1);
+                            loc, local->xattr_req);
         }
 
         return 0;
@@ -2169,7 +2248,7 @@ dht_newfile_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 		goto out;
 	}
 
-	ret = inode_ctx_set (inode, this, layout);
+	ret = inode_ctx_put (inode, this, (uint64_t)(long)layout);
 	if (ret != 0) {
 		gf_log (this->name, GF_LOG_ERROR,
 			"could not set inode context");
@@ -2484,7 +2563,7 @@ dht_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 		goto out;
 	}
 
-	ret = inode_ctx_set (inode, this, layout);
+	ret = inode_ctx_put (inode, this, (uint64_t)(long)layout);
 	if (ret != 0) {
 		gf_log (this->name, GF_LOG_ERROR,
 			"could not set inode context");
@@ -2550,8 +2629,9 @@ dht_mkdir_selfheal_cbk (call_frame_t *frame, void *cookie,
 	layout = local->selfheal.layout;
 
 	if (op_ret == 0) {
-		inode_ctx_set (local->inode, this, layout);
+		inode_ctx_put (local->inode, this, (uint64_t)(long)layout);
 		local->selfheal.layout = NULL;
+		local->stbuf.st_ino = local->st_ino;
 	}
 
 	DHT_STACK_UNWIND (frame, op_ret, op_errno,
@@ -2629,8 +2709,10 @@ dht_mkdir_hashed_cbk (call_frame_t *frame, void *cookie,
 
 	dht_stat_merge (this, &local->stbuf, stbuf, prev->this);
 
-	local->call_cnt = conf->subvolume_cnt - 1;
+	local->st_ino = local->stbuf.st_ino;
 
+	local->call_cnt = conf->subvolume_cnt - 1;
+	
 	if (local->call_cnt == 0) {
 		local->layout = NULL;
 		dht_selfheal_directory (frame, dht_mkdir_selfheal_cbk,
@@ -2740,11 +2822,11 @@ int
 dht_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	       int op_ret, int op_errno)
 {
+	uint64_t      tmp_layout = 0;
 	dht_local_t  *local = NULL;
 	int           this_call_cnt = 0;
 	call_frame_t *prev = NULL;
 	dht_layout_t *layout = NULL;
-	void         *tmp_layout = NULL; /* This is required to remove 'type-punned' warnings from gcc */
 
 	local = frame->local;
 	prev  = cookie;
@@ -2772,8 +2854,9 @@ unlock:
 	this_call_cnt = dht_frame_return (frame);
 	if (is_last_call (this_call_cnt)) {
 		if (local->need_selfheal) {
-			inode_ctx_get (local->loc.inode, this, &tmp_layout);
-			layout = tmp_layout;
+			inode_ctx_get (local->loc.inode, this, 
+				       &tmp_layout);
+			layout = (dht_layout_t *)(long)tmp_layout;
 
 			/* TODO: neater interface needed below */
 			local->stbuf.st_mode = local->loc.inode->st_mode;
@@ -3265,15 +3348,14 @@ err:
 int
 dht_forget (xlator_t *this, inode_t *inode)
 {
+	uint64_t      tmp_layout = 0;
 	dht_layout_t *layout = NULL;
-	void         *tmp_layout = NULL; /* This is required to remove 'type-punned' warnings from gcc */
 
 	inode_ctx_get (inode, this, &tmp_layout);
 
-	if (!tmp_layout)
+	if (!layout)
 		return 0;
-
-	layout = tmp_layout;
+	layout = (dht_layout_t *)(long)tmp_layout;
 	if (!layout->preset)
 		FREE (layout);
 

@@ -28,7 +28,7 @@
 #define DEFAULT_CLIENT_VOLUME_FILE            CONFDIR "/glusterfs.vol"
 #define DEFAULT_SERVER_VOLUME_FILE            CONFDIR "/glusterfsd.vol"
 #define DEFAULT_LOG_FILE_DIRECTORY            DATADIR "/log/glusterfs"
-#define DEFAULT_LOG_LEVEL                     GF_LOG_WARNING
+#define DEFAULT_LOG_LEVEL                     GF_LOG_NORMAL
 
 #define DEFAULT_EVENT_POOL_SIZE            16384
 
@@ -44,7 +44,7 @@
 #define ENABLE_DEBUG_MODE         1
 
 #define ZR_XLATOR_FUSE          "mount/fuse"
-#define ZR_MOUNTPOINT_OPT       "mount-point"
+#define ZR_MOUNTPOINT_OPT       "mountpoint"
 #define ZR_ATTR_TIMEOUT_OPT     "attribute-timeout"
 #define ZR_ENTRY_TIMEOUT_OPT    "entry-timeout"
 #define ZR_DIRECT_IO_OPT        "direct-io-mode"

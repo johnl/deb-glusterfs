@@ -137,6 +137,9 @@ dht_local_wipe (dht_local_t *local)
 		fd_unref (local->fd);
 		local->fd = NULL;
 	}
+	
+	if (local->xattr_req)
+		dict_unref (local->xattr_req);
 
 	FREE (local);
 }
@@ -248,36 +251,6 @@ dht_subvol_get_cached (xlator_t *this, inode_t *inode)
 
 out:
         return subvol;
-}
-
-
-int
-inode_ctx_set (inode_t *inode, xlator_t *this, void *ctx)
-{
-	int     ret = -1;
-	data_t *data = NULL;
-
-	data = get_new_data ();
-	if (!data)
-		goto out;
-
-	data->is_static = 1;
-	data->data = ctx;
-	ret = dict_set (inode->ctx, this->name, data);
-
-out:
-	return ret;
-}
-
-
-int
-inode_ctx_get (inode_t *inode, xlator_t *this, void **ctx)
-{
-	int ret = 0;
-
-	ret = dict_get_ptr (inode->ctx, this->name, ctx);
-
-	return ret;
 }
 
 

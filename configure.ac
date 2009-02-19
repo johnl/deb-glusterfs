@@ -14,7 +14,7 @@ dnl
 dnl You should have received a copy of the GNU General Public License
 dnl along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-AC_INIT([glusterfs],[2.0.0rc1],[gluster-users@gluster.org])
+AC_INIT([glusterfs],[2.0.0qa16],[gluster-users@gluster.org])
 
 AM_INIT_AUTOMAKE
 
@@ -61,6 +61,8 @@ AC_CONFIG_FILES([Makefile
 		xlators/cluster/dht/src/Makefile
 		xlators/cluster/ha/Makefile
 		xlators/cluster/ha/src/Makefile
+		xlators/cluster/map/Makefile
+		xlators/cluster/map/src/Makefile
 		xlators/performance/Makefile
 		xlators/performance/write-behind/Makefile
 		xlators/performance/write-behind/src/Makefile
@@ -120,6 +122,7 @@ AC_CONFIG_FILES([Makefile
 		doc/Makefile
 		doc/examples/Makefile
 		doc/hacker-guide/Makefile
+		doc/user-guide/Makefile
 		extras/Makefile
 		extras/init.d/Makefile
 		extras/init.d/glusterfs-server.plist
@@ -470,7 +473,11 @@ fi
 
 GF_HOST_OS=""
 GF_LDFLAGS="-rdynamic"
-GF_BOOSTER_SUBDIR="booster"
+
+if test "x$HAVE_LIBGLUSTERFSCLIENT" = "xyes"; then
+   GF_BOOSTER_SUBDIR="booster"
+fi
+
 GF_FUSE_LDADD="-lfuse"
 case $host_os in
      linux*)
@@ -494,7 +501,7 @@ case $host_os in
 	GF_CFLAGS="${ARGP_STANDALONE_CPPFLAGS}"
 	GF_GLUSTERFS_CFLAGS="${GF_CFLAGS}"
 	GF_LDADD="${ARGP_STANDALONE_LDADD}"
-	if test "x$HAVE_BACKTRACE" = "xyes"; then
+	if test "x$ac_cv_header_execinfo_h" = "xyes"; then
 	   GF_GLUSTERFS_LDFLAGS="-lexecinfo"
 	fi				      
 	GF_FUSE_LDADD="-liconv -lfuse"

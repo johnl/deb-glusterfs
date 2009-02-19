@@ -34,8 +34,10 @@
 #define CLIENT_PROTO_FORGET_LIMIT  128
 #define CLIENT_PORT_CIELING        1023
 
-#define CLIENT_TRANSPORT(this) (((client_private_t *)this->private)->transport)
-#define CLIENT_CONNECTION_PRIVATE(this) ((client_connection_private_t *)(CLIENT_TRANSPORT(this)->xl_private))
+#define GF_CLIENT_INODE_SELF   0
+#define GF_CLIENT_INODE_PARENT 1
+
+#define CLIENT_CONF(this) ((client_conf_t *)(this->private))
 
 #define RECEIVE_TIMEOUT(_cprivate,_current)         \
 		((_cprivate->last_received.tv_sec + \
@@ -47,27 +49,24 @@
                   _cprivate->transport_timeout) < \
                   _current.tv_sec)
 
-#define RECEIVE_TIMEOUT_SLOW(_cprivate,_current)       \
-		((_cprivate->last_received.tv_sec +    \
-                  _cprivate->slow_transport_timeout) < \
-                  _current.tv_sec)
+enum {
+	CHANNEL_BULK = 0,
+	CHANNEL_LOWLAT = 1,
+	CHANNEL_MAX
+};
+#define CLIENT_CHANNEL(xl,id) \
+	(((client_conf_t *)(xl->private))->transport[id])
 
-#define SEND_TIMEOUT_SLOW(_cprivate,_current)          \
-		((_cprivate->last_sent.tv_sec +        \
-                  _cprivate->slow_transport_timeout) < \
-                  _current.tv_sec)
-
-
-struct client_connection_private;
-typedef struct client_connection_private client_connection_private_t;
+struct client_connection;
+typedef struct client_connection client_connection_t;
 
 #include "stack.h"
 #include "xlator.h"
 #include "transport.h"
 #include "protocol.h"
 
-struct _client_private {
-	transport_t          *transport;
+struct _client_conf {
+	transport_t          *transport[CHANNEL_MAX];
 	xlator_t             *child;
 
 	/* enhancement for 'forget', a must required where lot 
@@ -78,31 +77,31 @@ struct _client_private {
 		uint32_t  frames_in_transit;
 		gf_lock_t lock;
 	} forget;
+	dict_t              *saved_fds;
+	pthread_mutex_t      mutex;
 };
-typedef struct _client_private client_private_t;
+typedef struct _client_conf client_conf_t;
 
 /* This will be stored in transport_t->xl_private */
-struct client_connection_private {
-	pthread_mutex_t lock;
-	uint64_t callid;
+struct client_connection {
+	pthread_mutex_t      lock;
+	uint64_t             callid;
 	struct saved_frames *saved_frames;
-	dict_t *saved_fds;
-	inode_table_t *table;
-	int32_t transport_timeout;
-	int32_t slow_transport_timeout;
-	int32_t slow_op_count;       /* if set, gives extra timeout period
-					for calls */
-	gf_timer_t *reconnect;
-	char connected;
-	uint64_t max_block_size;  /* maximum size of protocol data block that
-				   * this client can recieve, 0 is unlimited */
-	struct timeval last_sent;
-	struct timeval last_received;
-	gf_timer_t *timer;
+	int32_t              transport_timeout;
+	int32_t              ping_started;
+	int32_t              ping_timeout;
+	gf_timer_t          *reconnect;
+	char                 connected;
+	uint64_t             max_block_size;
+	struct timeval       last_sent;
+	struct timeval       last_received;
+	gf_timer_t          *timer;
+	gf_timer_t          *ping_timer;
 };
 
 typedef struct {
-	inode_t *inode;
+	loc_t loc;
+	loc_t loc2;
 	fd_t *fd;
 } client_local_t;
 
@@ -111,6 +110,7 @@ typedef struct {
 	size_t           hdrlen;
 	call_frame_t    *frame;
 } client_forget_t;
+
 static inline void
 gf_string_to_stat(char *string, struct stat *stbuf)
 {

@@ -17,7 +17,9 @@
    <http://www.gnu.org/licenses/>.
 */
 
-
+/* TODO: link(oldpath, newpath) fails if newpath already exists. DHT should
+ *       delete the newpath if it gets EEXISTS from link() call.
+ */
 #ifndef _CONFIG_H
 #define _CONFIG_H
 #include "config.h"
@@ -376,7 +378,7 @@ dht_rename_links_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 	local = frame->local;
 	prev = cookie;
-
+	
 	if (op_ret == -1) {
 		gf_log (this->name, GF_LOG_DEBUG,
 			"link/file on %s failed (%s)",
@@ -389,7 +391,7 @@ dht_rename_links_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	if (is_last_call (this_call_cnt)) {
 		if (local->op_ret == -1)
 			goto unwind;
-
+		
 		dht_do_rename (frame);
 	}
 

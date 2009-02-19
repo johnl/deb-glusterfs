@@ -181,7 +181,7 @@ sharedstatedir = @sharedstatedir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 target_alias = @target_alias@
-EXTRA_DIST = afr.txt bdb.txt posix.txt call-stub.txt write-behind.txt
+EXTRA_DIST = replicate.txt bdb.txt posix.txt call-stub.txt write-behind.txt
 all: all-am
 
 .SUFFIXES:

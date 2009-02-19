@@ -58,7 +58,7 @@ xlatorLTLIBRARIES_INSTALL = $(INSTALL)
 LTLIBRARIES = $(xlator_LTLIBRARIES)
 posix_la_DEPENDENCIES =  \
 	$(top_builddir)/libglusterfs/src/libglusterfs.la
-am_posix_la_OBJECTS = posix.lo
+am_posix_la_OBJECTS = posix.lo xattr-cache.lo
 posix_la_OBJECTS = $(am_posix_la_OBJECTS)
 DEFAULT_INCLUDES = -I. -I$(srcdir) -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
@@ -214,9 +214,9 @@ target_alias = @target_alias@
 xlator_LTLIBRARIES = posix.la
 xlatordir = $(libdir)/glusterfs/$(PACKAGE_VERSION)/xlator/storage
 posix_la_LDFLAGS = -module -avoidversion
-posix_la_SOURCES = posix.c 
+posix_la_SOURCES = posix.c xattr-cache.c
 posix_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la 
-noinst_HEADERS = posix.h 
+noinst_HEADERS = posix.h xattr-cache.h
 AM_CFLAGS = -fPIC -fno-strict-aliasing -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -D$(GF_HOST_OS) -Wall \
 	-I$(top_srcdir)/libglusterfs/src -shared -nostartfiles \
 	$(GF_CFLAGS)
@@ -292,6 +292,7 @@ distclean-compile:
 	-rm -f *.tab.c
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/posix.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xattr-cache.Plo@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	if $(COMPILE) -MT $@ -MD -MP -MF "$(DEPDIR)/$*.Tpo" -c -o $@ $<; \

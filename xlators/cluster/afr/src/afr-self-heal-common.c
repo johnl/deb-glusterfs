@@ -893,13 +893,20 @@ sh_missing_entries_lookup (call_frame_t *frame, xlator_t *this)
 	int             i = 0;
 	int             call_count = 0;
 	afr_private_t  *priv = NULL;
-
+	dict_t         *xattr_req = NULL;
+	int             ret = -1;
 
 	local = frame->local;
 	call_count = local->child_count;
 	priv = this->private;
 
 	local->call_count = call_count;
+	
+	xattr_req = dict_new();
+	
+	if (xattr_req)
+		ret = dict_set_uint64 (xattr_req, AFR_ENTRY_PENDING,
+				       priv->child_count * sizeof(int32_t));
 
 	for (i = 0; i < priv->child_count; i++) {
 		if (local->child_up[i]) {
@@ -912,12 +919,15 @@ sh_missing_entries_lookup (call_frame_t *frame, xlator_t *this)
 					   (void *) (long) i,
 					   priv->children[i],
 					   priv->children[i]->fops->lookup,
-					   &local->loc, 0);
+					   &local->loc, xattr_req);
 
 			if (!--call_count)
 				break;
 		}
 	}
+	
+	if (xattr_req)
+		dict_unref (xattr_req);
 
 	return 0;
 }
@@ -1022,8 +1032,6 @@ afr_self_heal (call_frame_t *frame, xlator_t *this,
 	local = frame->local;
 	sh = &local->self_heal;
 	priv = this->private;
-
-	frame->root->pid = frame->root->unique;
 
 	gf_log (this->name, GF_LOG_DEBUG,
 		"performing self heal on %s (metadata=%d data=%d entry=%d)",

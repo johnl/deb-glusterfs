@@ -604,8 +604,10 @@ typedef struct {
 	uint64_t ino; /* NOTE: used only in case of 'root' lookup */
 	uint64_t par;
 	uint32_t flags;
+	uint32_t dictlen;
 	char     path[0];
 	char     bname[0];
+	char     dict[0];
 } __attribute__((packed)) gf_fop_lookup_req_t;
 typedef struct {
 	struct gf_stat stat;
@@ -689,6 +691,11 @@ typedef struct {
 	char buf[0];
 } __attribute__((packed)) gf_mop_setvolume_rsp_t;
 
+
+typedef struct {
+} __attribute__((packed)) gf_mop_ping_req_t;
+typedef struct {
+} __attribute__((packed)) gf_mop_ping_rsp_t;
 
 
 typedef struct {
