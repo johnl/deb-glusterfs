@@ -42,20 +42,11 @@
 #include <sys/poll.h>
 #include <pthread.h>
 
-#define FUNCTION_CALLED /*\
-do {                    \
-     gf_log (__FILE__, GF_LOG_DEBUG, "%s called\n", __FUNCTION__); \
-     } while (0) */
-
-
+#include "list.h"
+#include "logging.h"
 
 #define GF_YES 1
 #define GF_NO  0
-
-#ifndef EBADFD
-/* savannah bug #20049, patch for compiling on darwin */
-#define EBADFD EBADRPC
-#endif 
 
 #ifndef O_LARGEFILE
 /* savannah bug #20053, patch for compiling on darwin */
@@ -72,96 +63,133 @@ do {                    \
 #define O_DIRECTORY 0
 #endif
 
-#define GLUSTERFS_VERSION "trusted.glusterfs.version"
-#define GLUSTERFS_CREATETIME "trusted.glusterfs.createtime"
+#define ZR_FILE_CONTENT_STR     "glusterfs.file."
+#define ZR_FILE_CONTENT_STRLEN 15
+
+#define ZR_FILE_CONTENT_REQUEST(key) (!strncmp(key, ZR_FILE_CONTENT_STR, \
+					       ZR_FILE_CONTENT_STRLEN))
+
+/* TODO: Should we use PATH-MAX? On some systems it may save space */
+#define ZR_PATH_MAX 4096    
+
+/* This is used as the maximum permitted filename length over FS. 
+ * If the backend FS supports higher than this, it should be changed. 
+ */
+#define ZR_FILENAME_MAX 256 
+
 
 /* NOTE: add members ONLY at the end (just before _MAXVALUE) */
 typedef enum {
-  GF_FOP_STAT,       /* 0 */
-  GF_FOP_READLINK,   /* 1 */
-  GF_FOP_MKNOD,      /* 2 */
-  GF_FOP_MKDIR,
-  GF_FOP_UNLINK,
-  GF_FOP_RMDIR,      /* 5 */
-  GF_FOP_SYMLINK,
-  GF_FOP_RENAME,
-  GF_FOP_LINK,
-  GF_FOP_CHMOD,
-  GF_FOP_CHOWN,      /* 10 */
-  GF_FOP_TRUNCATE,
-  GF_FOP_OPEN,
-  GF_FOP_READ,
-  GF_FOP_WRITE,
-  GF_FOP_STATFS,     /* 15 */
-  GF_FOP_FLUSH,
-  GF_FOP_CLOSE,
-  GF_FOP_FSYNC,
-  GF_FOP_SETXATTR,
-  GF_FOP_GETXATTR,   /* 20 */
-  GF_FOP_REMOVEXATTR,
-  GF_FOP_OPENDIR,
-  GF_FOP_GETDENTS,
-  GF_FOP_CLOSEDIR,
-  GF_FOP_FSYNCDIR,   /* 25 */
-  GF_FOP_ACCESS,
-  GF_FOP_CREATE,
-  GF_FOP_FTRUNCATE,
-  GF_FOP_FSTAT,
-  GF_FOP_LK,         /* 30 */
-  GF_FOP_UTIMENS,
-  GF_FOP_FCHMOD,
-  GF_FOP_FCHOWN,
-  GF_FOP_LOOKUP,
-  GF_FOP_FORGET,     /* 35 */
-  GF_FOP_SETDENTS,
-  GF_FOP_RMELEM,
-  GF_FOP_INCVER,
-  GF_FOP_READDIR,
-  GF_FOP_CHECKSUM,
-  GF_FOP_MAXVALUE,
+        GF_FOP_STAT,       /* 0 */
+        GF_FOP_READLINK,   /* 1 */
+        GF_FOP_MKNOD,      /* 2 */
+        GF_FOP_MKDIR,
+        GF_FOP_UNLINK,
+        GF_FOP_RMDIR,      /* 5 */
+        GF_FOP_SYMLINK,
+        GF_FOP_RENAME,
+        GF_FOP_LINK,
+        GF_FOP_CHMOD,
+        GF_FOP_CHOWN,      /* 10 */
+        GF_FOP_TRUNCATE,
+        GF_FOP_OPEN,
+        GF_FOP_READ,
+        GF_FOP_WRITE,
+        GF_FOP_STATFS,     /* 15 */
+        GF_FOP_FLUSH,
+        GF_FOP_FSYNC,
+        GF_FOP_SETXATTR,
+        GF_FOP_GETXATTR,   
+        GF_FOP_REMOVEXATTR,/* 20 */
+        GF_FOP_OPENDIR,
+        GF_FOP_GETDENTS,
+        GF_FOP_FSYNCDIR,   
+        GF_FOP_ACCESS,
+        GF_FOP_CREATE,     /* 25 */
+        GF_FOP_FTRUNCATE,
+        GF_FOP_FSTAT,
+        GF_FOP_LK,         
+        GF_FOP_UTIMENS,
+        GF_FOP_FCHMOD,     /* 30 */
+        GF_FOP_FCHOWN,
+        GF_FOP_LOOKUP,
+        GF_FOP_SETDENTS,
+        GF_FOP_READDIR,    
+        GF_FOP_INODELK,   /* 35 */
+        GF_FOP_FINODELK, 
+	GF_FOP_ENTRYLK,  
+	GF_FOP_FENTRYLK,  
+        GF_FOP_CHECKSUM,      
+        GF_FOP_XATTROP,  /* 40 */
+        GF_FOP_FXATTROP,
+        GF_FOP_MAXVALUE,  
 } glusterfs_fop_t;
 
 /* NOTE: add members ONLY at the end (just before _MAXVALUE) */
 typedef enum {
-  GF_MOP_SETVOLUME,
-  GF_MOP_GETVOLUME,
-  GF_MOP_STATS,
-  GF_MOP_SETSPEC,
-  GF_MOP_GETSPEC,
-  GF_MOP_LOCK,
-  GF_MOP_UNLOCK,
-  GF_MOP_LISTLOCKS,
-  GF_MOP_FSCK,
-  GF_MOP_MAXVALUE
+        GF_MOP_SETVOLUME, /* 0 */
+        GF_MOP_GETVOLUME, /* 1 */
+        GF_MOP_STATS,
+        GF_MOP_SETSPEC,
+        GF_MOP_GETSPEC,
+        GF_MOP_MAXVALUE   /* 5 */
 } glusterfs_mop_t;
 
 typedef enum {
-  GF_OP_TYPE_FOP_REQUEST = 1,
-  GF_OP_TYPE_MOP_REQUEST,
-  GF_OP_TYPE_FOP_REPLY,
-  GF_OP_TYPE_MOP_REPLY
+	GF_CBK_FORGET,      /* 0 */
+	GF_CBK_RELEASE,     /* 1 */
+	GF_CBK_RELEASEDIR,  /* 2 */
+	GF_CBK_MAXVALUE     /* 3 */
+} glusterfs_cbk_t;
+
+typedef enum {
+        GF_OP_TYPE_FOP_REQUEST = 1,
+        GF_OP_TYPE_MOP_REQUEST,
+	GF_OP_TYPE_CBK_REQUEST,
+        GF_OP_TYPE_FOP_REPLY,
+        GF_OP_TYPE_MOP_REPLY,
+	GF_OP_TYPE_CBK_REPLY
 } glusterfs_op_type_t;
 
 /* NOTE: all the miscellaneous flags used by GlusterFS should be listed here */
 typedef enum {
-  GF_LK_GETLK = 0,
-  GF_LK_SETLK,
-  GF_LK_SETLKW,
+        GF_LK_GETLK = 0,
+        GF_LK_SETLK,
+        GF_LK_SETLKW,
 } glusterfs_lk_cmds_t;
 
 typedef enum {
-  GF_LK_F_RDLCK = 0,
-  GF_LK_F_WRLCK,
-  GF_LK_F_UNLCK
+        GF_LK_F_RDLCK = 0,
+        GF_LK_F_WRLCK,
+        GF_LK_F_UNLCK
 } glusterfs_lk_types_t;
 
 typedef enum {
-  GF_GET_ALL = 1,
-  GF_GET_DIR_ONLY,
-  GF_GET_SYMLINK_ONLY,
-  GF_GET_REGULAR_FILES_ONLY,
+        GF_LOCK_POSIX, 
+        GF_LOCK_INTERNAL
+} gf_lk_domain_t;
+
+typedef enum {
+	ENTRYLK_LOCK,
+	ENTRYLK_UNLOCK,
+	ENTRYLK_LOCK_NB
+} entrylk_cmd;
+
+typedef enum {
+	ENTRYLK_RDLCK,
+	ENTRYLK_WRLCK
+} entrylk_type;
+
+typedef enum {
+        GF_GET_ALL = 1,
+        GF_GET_DIR_ONLY,
+        GF_GET_SYMLINK_ONLY,
+        GF_GET_REGULAR_FILES_ONLY,
 } glusterfs_getdents_flags_t;
 
+typedef enum {
+	GF_XATTROP_ADD_ARRAY,
+} gf_xattrop_flags_t;
 
 #define GF_SET_IF_NOT_PRESENT 0x1 /* default behaviour */
 #define GF_SET_OVERWRITE      0x2 /* Overwrite with the buf given */
@@ -169,29 +197,61 @@ typedef enum {
 #define GF_SET_EPOCH_TIME     0x8 /* used by afr dir lookup selfheal */
 
 
-typedef enum poll_type {
-  SYS_POLL_TYPE_POLL,
-  SYS_POLL_TYPE_EPOLL
-} glusterfs_poll_type_t;
+struct _xlator_cmdline_option {
+	struct list_head cmd_args;
+	char *volume;
+	char *key;
+	char *value;
+};
+typedef struct _xlator_cmdline_option xlator_cmdline_option_t;
+
+struct _cmd_args {
+	/* basic options */
+	char            *volfile_server;
+	char            *volume_file;
+	gf_loglevel_t    log_level;
+	char            *log_file;
+	/* advanced options */
+	uint32_t         volfile_server_port;
+	char            *volfile_server_transport;
+	char            *pid_file;
+	int              no_daemon_mode;
+	char            *run_id;
+	int              debug_mode;
+	struct list_head xlator_options;  /* list of xlator_option_t */
+
+	/* fuse options */
+	int              fuse_direct_io_mode_flag;
+	unsigned int     fuse_entry_timeout;
+	unsigned int     fuse_attribute_timeout;
+	char            *volume_name;
+	int              non_local;       /* Used only by darwin os, 
+					     used for '-o local' option */
+	char            *icon_name;       /* This string will appear as 
+					     Desktop icon name when mounted
+					     on darwin */
+	int              fuse_nodev;
+	int              fuse_nosuid;
+
+	/* key args */
+	char            *mount_point;
+	char            *volfile_id;
+};
+typedef struct _cmd_args cmd_args_t;
 
 struct _glusterfs_ctx {
-  char fin;
-  char foreground;
-  char *mount_point;
-  char *node_name;
-  char *logfile;
-  char *pidfile;
-  char *specfile;
-  char *serverip;
-  char cmd[256];
-  int32_t loglevel;
-  glusterfs_poll_type_t poll_type;
-  void *poll_ctx;
-  void *timer;
-  void *ib;
-  void *pool;
-  void *graph;
-  pthread_mutex_t lock;
+	cmd_args_t         cmd_args;
+	char              *process_uuid;
+	FILE              *specfp;
+	FILE              *pidfp;
+	char               fin;
+	void              *timer;
+	void              *ib;
+	void              *pool;
+	void              *graph;
+	void              *top; /* either fuse or server protocol */
+	void              *event_pool;
+	pthread_mutex_t    lock;
 };
 
 typedef struct _glusterfs_ctx glusterfs_ctx_t;
@@ -199,10 +259,15 @@ typedef struct _glusterfs_ctx glusterfs_ctx_t;
 typedef enum {
   GF_EVENT_PARENT_UP = 1,
   GF_EVENT_POLLIN,
+  GF_EVENT_POLLOUT,
   GF_EVENT_POLLERR,
   GF_EVENT_CHILD_UP,
   GF_EVENT_CHILD_DOWN,
+  GF_EVENT_CHILD_CONNECTING,
   GF_EVENT_TRANSPORT_CLEANUP,
+  GF_EVENT_TRANSPORT_CONNECTED,
 } glusterfs_event_t;
+
+#define GF_MUST_CHECK __attribute__((warn_unused_result))
 
 #endif /* _GLUSTERFS_H */

@@ -4,3 +4,5 @@ EXTRA_DIST = $(EXTRA)
 docdir = $(datadir)/doc/$(PACKAGE_NAME)
 Examplesdir = $(docdir)/examples
 Examples_DATA = $(EXTRA)
+
+CLEANFILES = 

@@ -1,5 +1,5 @@
 " glusterfs.vim: GNU Vim Syntax file for GlusterFS .vol specification
-" Copyright (C) 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+" Copyright (C) 2007 Z RESEARCH, Inc. <http://www.zresearch.com>
 " This file is part of GlusterFS.
 "
 " GlusterFS is free software; you can redistribute it and/or modify
@@ -95,7 +95,7 @@ syn match glusterfsOptValTransportType contained "\<\(tcp\|ib\-verbs\|ib-sdp\)/\
 
 syn keyword glusterfsOptKey contained remote-subvolume skipwhite nextgroup=glusterfsVolName
 
-syn keyword glusterfsOptKey contained auth.ip.ra8.allow auth.ip.ra7.allow auth.ip.ra6.allow auth.ip.ra5.allow auth.ip.ra4.allow auth.ip.ra3.allow auth.ip.ra2.allow auth.ip.ra1.allow auth.ip.brick-ns.allow skipwhite nextgroup=glusterfsOptVal
+syn keyword glusterfsOptKey contained auth.addr.ra8.allow auth.addr.ra7.allow auth.addr.ra6.allow auth.addr.ra5.allow auth.addr.ra4.allow auth.addr.ra3.allow auth.addr.ra2.allow auth.addr.ra1.allow auth.addr.brick-ns.allow skipwhite nextgroup=glusterfsOptVal
 
 syn keyword glusterfsOptKey contained client-volume-filename directory trash-dir skipwhite nextgroup=glusterfsOpt_Path
 syn match glusterfsOpt_Path contained "\s\+\f\+\>"

@@ -1,26 +1,28 @@
 /*
-   Copyright (c) 2006, 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
-   This file is part of GlusterFS.
+  Copyright (c) 2006, 2007, 2008 Z RESEARCH, Inc. <http://www.zresearch.com>
+  This file is part of GlusterFS.
 
-   GlusterFS is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published
-   by the Free Software Foundation; either version 3 of the License,
-   or (at your option) any later version.
+  GlusterFS is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published
+  by the Free Software Foundation; either version 3 of the License,
+  or (at your option) any later version.
 
-   GlusterFS is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
+  GlusterFS is distributed in the hope that it will be useful, but
+  WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  General Public License for more details.
 
-   You should have received a copy of the GNU General Public License
-   along with this program.  If not, see
-   <http://www.gnu.org/licenses/>.
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see
+  <http://www.gnu.org/licenses/>.
 */
 
 #ifndef _CONFIG_H
 #define _CONFIG_H
 #include "config.h"
 #endif
+#include <inttypes.h>
+
 
 #include "glusterfs.h"
 #include "client-protocol.h"
@@ -32,316 +34,452 @@
 #include "logging.h"
 #include "timer.h"
 #include "defaults.h"
+#include "compat.h"
+#include "compat-errno.h"
 
 #include <sys/resource.h>
 #include <inttypes.h>
 
-#if __WORDSIZE == 64
-# define F_L64 "%l"
-#else
-# define F_L64 "%ll"
-#endif
-
-static int32_t client_protocol_interpret (transport_t *trans, gf_block_t *blk);
-static int32_t client_protocol_cleanup (transport_t *trans);
+/* for default_*_cbk functions */
+#include "defaults.c"
+#include "saved-frames.h"
 
 
-typedef int32_t (*gf_op_t) (call_frame_t *frame,
-			    dict_t *args);
+int protocol_client_cleanup (transport_t *trans);
+int protocol_client_interpret (xlator_t *this, transport_t *trans,
+                               char *hdr_p, size_t hdrlen,
+                               char *buf_p, size_t buflen);
+int32_t
+protocol_client_xfer (call_frame_t *frame,
+                      xlator_t *this,
+                      int type, int op,
+                      gf_hdr_common_t *hdr, size_t hdrlen,
+                      struct iovec *vector, int count,
+                      dict_t *refs);
 
 static gf_op_t gf_fops[];
 static gf_op_t gf_mops[];
+static gf_op_t gf_cbks[];
 
-/* 
+static ino_t
+this_ino_get (inode_t *inode, xlator_t *this)
+{
+	ino_t ino = 0;
+	int32_t ret = 0;
+
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+	GF_VALIDATE_OR_GOTO (this->name, inode, out);
+
+	if (inode->ino == 1) {
+		ino = 1;
+		goto out;
+	}
+
+	ret = dict_get_uint64 (inode->ctx, this->name, &ino);
+
+	if (inode->ino && ret < 0) {
+		/* TODO: this log is useless */
+		;
+		/* gf_log (this->name, GF_LOG_ERROR,
+			"failed to do dict get from inode(%p)/%"PRId64,
+			inode, inode->ino);
+		*/
+	}
+
+out:
+	return ino;
+}
+
+static void
+this_ino_set (inode_t *inode, xlator_t *this, ino_t ino)
+{
+	ino_t old_ino = 0;
+	int32_t ret = -1;
+
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+	GF_VALIDATE_OR_GOTO (this->name, inode, out);
+
+	ret = dict_get_uint64 (inode->ctx, this->name, &old_ino);
+
+	if (old_ino != ino) {
+		/* TODO: This log doesn't make sense */
+		if (old_ino)
+			gf_log (this->name, GF_LOG_DEBUG,
+				"inode number(%"PRId64") changed for "
+				"inode(%p)",
+				old_ino, inode);
+
+		ret = dict_set_uint64 (inode->ctx, this->name, ino);
+		if (ret < 0) {
+			/* TODO: This log doesn't make sense */
+			gf_log (this->name, GF_LOG_ERROR,
+				"failed to set inode number(%"PRId64") to "
+				"inode(%p)",
+				ino, inode);
+		}
+	}
+out:
+	return;
+}
+
+static int
+this_fd_get (fd_t *file, xlator_t *this, int64_t *remote_fd)
+{
+	int ret = 0;
+	int dict_ret = -1;
+
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+	GF_VALIDATE_OR_GOTO (this->name, file, out);
+	GF_VALIDATE_OR_GOTO (this->name, remote_fd, out);
+
+	dict_ret = dict_get_int64 (file->ctx, this->name, remote_fd);
+
+	if (dict_ret < 0) {
+		ret = -1;
+	}
+out:
+	return ret;
+}
+
+
+static void
+this_fd_set (fd_t *file, xlator_t *this, int64_t fd)
+{
+	int64_t old_fd = -1;
+	int32_t ret = -1;
+
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+	GF_VALIDATE_OR_GOTO (this->name, file, out);
+
+	ret = dict_get_int64 (file->ctx, this->name, &old_fd);
+	if (ret >= 0) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_WARNING,
+			"duplicate fd_set for fd_t(%p) with old_fd(%"PRId64")",
+			file, old_fd);
+	}
+
+	ret = dict_set_int64 (file->ctx, this->name, fd);
+	if (ret < 0) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to set remote fd(%"PRId64") to fd_t(%p)",
+			fd, file);
+	}
+out:
+	return;
+}
+
+
+/*
  * lookup_frame - lookup call frame corresponding to a given callid
  * @trans: transport object
  * @callid: call id of the frame
  *
  * not for external reference
  */
+
 static call_frame_t *
-lookup_frame (transport_t *trans, int64_t callid)
+lookup_frame (transport_t *trans, int32_t op, int8_t type, int64_t callid)
 {
-  char buf[64];
-  call_frame_t *frame = NULL;
-  client_proto_priv_t *priv = NULL;
+	client_connection_private_t *cprivate = NULL;
+	call_frame_t  *frame = NULL;
 
-  if (!trans) {
-    gf_log ("", GF_LOG_ERROR, "!trans");
-    return NULL;
-  }
+	cprivate = trans->xl_private;
 
-  snprintf (buf, 64, "%"PRId64, callid);
-  priv = trans->xl_private;
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		frame = saved_frames_get (cprivate->saved_frames,
+					  op, type, callid);
+	}
+	pthread_mutex_unlock (&cprivate->lock);
 
-  pthread_mutex_lock (&priv->lock);
-  {
-    frame = data_to_bin (dict_get (priv->saved_frames, buf));
-    dict_del (priv->saved_frames, buf);
-  }
-  pthread_mutex_unlock (&priv->lock);
-
-  return frame;
+	return frame;
 }
 
-/*
- * str_to_stat - convert a ASCII string to a struct stat
- * @buf: string
- *
- * not for external reference
- */
-static struct stat *
-str_to_stat (char *buf)
-{
-  struct stat *stbuf = calloc (1, sizeof (*stbuf));
-
-  uint64_t dev;
-  uint64_t ino;
-  uint32_t mode;
-  uint32_t nlink;
-  uint32_t uid;
-  uint32_t gid;
-  uint64_t rdev;
-  uint64_t size;
-  uint32_t blksize;
-  uint64_t blocks;
-  uint32_t atime;
-  uint32_t atime_nsec;
-  uint32_t mtime;
-  uint32_t mtime_nsec;
-  uint32_t ctime;
-  uint32_t ctime_nsec;
-
-  sscanf (buf, GF_STAT_PRINT_FMT_STR,
-	  &dev,
-	  &ino,
-	  &mode,
-	  &nlink,
-	  &uid,
-	  &gid,
-	  &rdev,
-	  &size,
-	  &blksize,
-	  &blocks,
-	  &atime,
-	  &atime_nsec,
-	  &mtime,
-	  &mtime_nsec,
-	  &ctime,
-	  &ctime_nsec);
-
-  stbuf->st_dev = dev;
-  stbuf->st_ino = ino;
-  stbuf->st_mode = mode;
-  stbuf->st_nlink = nlink;
-  stbuf->st_uid = uid;
-  stbuf->st_gid = gid;
-  stbuf->st_rdev = rdev;
-  stbuf->st_size = size;
-  stbuf->st_blksize = blksize;
-  stbuf->st_blocks = blocks;
-
-  stbuf->st_atime = atime;
-  stbuf->st_mtime = mtime;
-  stbuf->st_ctime = ctime;
-
-#if HAVE_TV_NSEC
-  stbuf->st_atim.tv_nsec = atime_nsec;
-  stbuf->st_mtim.tv_nsec = mtime_nsec;
-  stbuf->st_ctim.tv_nsec = ctime_nsec;
-#endif
-
-  return stbuf;
-}
 
 static void
-call_bail (void *trans)
+call_bail (void *data)
 {
-  client_proto_priv_t *priv = NULL;
-  struct timeval current;
-  int32_t bail_out = 0;
+	client_connection_private_t *cprivate = NULL;
+	struct timeval current;
+	int32_t bail_out = 0;
+	transport_t *trans = NULL;
 
-  if (!trans) {
-    gf_log ("", GF_LOG_ERROR, "!trans");
-    return;
-  }
+	GF_VALIDATE_OR_GOTO("client", data, out);
+	trans = data;
 
-  priv = ((transport_t *)trans)->xl_private;
+	cprivate = trans->xl_private;
 
-  gettimeofday (&current, NULL);
-  pthread_mutex_lock (&priv->lock);
-  {
-    /* Chaining to get call-always functionality from call-once timer */
-    if (priv->timer) {
-      struct timeval timeout = {0,};
-      timeout.tv_sec = 10;
-      timeout.tv_usec = 0;
-      gf_timer_cbk_t timer_cbk = priv->timer->cbk;
-      gf_timer_call_cancel (((transport_t *) trans)->xl->ctx, priv->timer);
-      priv->timer = gf_timer_call_after (((transport_t *) trans)->xl->ctx,
-					 timeout,
-					 timer_cbk,
-					 trans);
-      if (!priv->timer) {
-	gf_log (((transport_t *)trans)->xl->name, GF_LOG_DEBUG,
-		"Cannot create timer");
-      }
-    }
+	gettimeofday (&current, NULL);
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		/* Chaining to get call-always functionality from 
+		   call-once timer */
+		if (cprivate->timer) {
+			struct timeval timeout = {0,};
+			gf_timer_cbk_t timer_cbk = cprivate->timer->cbk;
 
-    if ((priv->saved_frames->count > 0)
-	&& (((unsigned long long)priv->last_recieved.tv_sec + priv->transport_timeout) < current.tv_sec)
-	&& (((unsigned long long)priv->last_sent.tv_sec + priv->transport_timeout ) < current.tv_sec)) {
-      struct tm last_sent_tm, last_received_tm;
-      char last_sent[32], last_received[32];
+			timeout.tv_sec = 10;
+			timeout.tv_usec = 0;
 
-      bail_out = 1;
-      localtime_r (&priv->last_sent.tv_sec, &last_sent_tm);
-      localtime_r (&priv->last_recieved.tv_sec, &last_received_tm);
-      strftime (last_sent, 32, "%Y-%m-%d %H:%M:%S", &last_sent_tm);
-      strftime (last_received, 32, "%Y-%m-%d %H:%M:%S", &last_received_tm);
-      gf_log (((transport_t *)trans)->xl->name, GF_LOG_WARNING,
-	      "activating bail-out. pending frames = %d. last sent = %s. last received = %s transport-timeout = %d", 
-	      priv->saved_frames->count, last_sent, last_received, 
-	      priv->transport_timeout);
-    }
-  }
-  pthread_mutex_unlock (&priv->lock);
+			gf_timer_call_cancel (trans->xl->ctx, cprivate->timer);
+			cprivate->timer = gf_timer_call_after (trans->xl->ctx,
+							       timeout,
+							       timer_cbk,
+							       trans);
+			if (cprivate->timer == NULL) {
+				gf_log (trans->xl->name, GF_LOG_DEBUG,
+					"Cannot create bailout timer");
+			}
+		}
 
-  if (bail_out) {
-    gf_log (((transport_t *)trans)->xl->name, GF_LOG_CRITICAL,
-	  "bailing transport");
-    transport_bail (trans);
-  }
+		if (((cprivate->saved_frames->count > 0) &&
+		     (RECEIVE_TIMEOUT(cprivate, current)) && 
+		     (SEND_TIMEOUT(cprivate, current))) && 
+		    (!cprivate->slow_op_count)) {
+
+			struct tm last_sent_tm, last_received_tm;
+			char last_sent[32] = {0,}, last_received[32] = {0,};
+
+			bail_out = 1;
+			
+			localtime_r (&cprivate->last_sent.tv_sec, 
+				     &last_sent_tm);
+			localtime_r (&cprivate->last_received.tv_sec, 
+				     &last_received_tm);
+			
+			strftime (last_sent, 32, 
+				  "%Y-%m-%d %H:%M:%S", &last_sent_tm);
+			strftime (last_received, 32, 
+				  "%Y-%m-%d %H:%M:%S", &last_received_tm);
+			
+			gf_log (trans->xl->name, GF_LOG_ERROR,
+				"activating bail-out. pending frames = %d. "
+				"last sent = %s. last received = %s. "
+				"transport-timeout = %d",
+				(int32_t) cprivate->saved_frames->count,
+				last_sent, last_received,
+				cprivate->transport_timeout);
+		}
+		if ((cprivate->slow_op_count) &&
+		    (RECEIVE_TIMEOUT_SLOW(cprivate, current)) && 
+		    (SEND_TIMEOUT_SLOW(cprivate, current))) {
+
+			struct tm last_sent_tm, last_received_tm;
+			char last_sent[32] = {0,}, last_received[32] = {0,};
+
+			bail_out = 1;
+			
+			localtime_r (&cprivate->last_sent.tv_sec, 
+				     &last_sent_tm);
+			localtime_r (&cprivate->last_received.tv_sec, 
+				     &last_received_tm);
+			
+			strftime (last_sent, 32, 
+				  "%Y-%m-%d %H:%M:%S", &last_sent_tm);
+			strftime (last_received, 32, 
+				  "%Y-%m-%d %H:%M:%S", &last_received_tm);
+			
+			gf_log (trans->xl->name, GF_LOG_ERROR,
+				"activating bail-out. pending frames = %d "
+				"(%d are slow). last sent = %s. last received "
+				"= %s. transport-timeout = %d",
+				(int32_t ) cprivate->saved_frames->count, 
+				cprivate->slow_op_count,
+				last_sent, last_received,
+				cprivate->slow_transport_timeout);
+		}
+	}
+	pthread_mutex_unlock (&cprivate->lock);
+
+	if (bail_out) {
+		gf_log (trans->xl->name, GF_LOG_CRITICAL,
+			"bailing transport");
+		transport_disconnect (trans);
+	}
+out:
+	return;
 }
 
-/* 
- * client_protocol_xfer - client protocol transfer routine. called to send 
- *                        request packet to server
- * @frame: call frame
- * @this:
- * @type: operation type
- * @op: operation
- * @request: request data
- *
- * not for external reference
- */
+
+void
+save_frame (transport_t *trans, call_frame_t *frame,
+	    int32_t op, int8_t type, uint64_t callid)
+{
+	client_connection_private_t *cprivate = NULL;
+	struct timeval timeout        = {0, };
+
+
+	cprivate = trans->xl_private;
+
+	saved_frames_put (cprivate->saved_frames, frame, op, type, callid);
+
+	if (cprivate->timer == NULL) {
+		timeout.tv_sec  = 10;
+		timeout.tv_usec = 0;
+		cprivate->timer = gf_timer_call_after (trans->xl->ctx, timeout,
+						       call_bail,
+						       (void *)trans);
+       }
+}
+
+
+int32_t 
+client_get_forgets (xlator_t *this, client_forget_t *forget) 
+{
+	call_frame_t        *fr = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	size_t               hdrlen = 0;
+	gf_cbk_forget_req_t *req = NULL;
+	int                  ret = -1;
+	client_private_t    *priv = NULL;
+	int                  count = 0;
+	int                  index = 0;
+
+	priv = this->private;
+
+	if (priv->forget.count > 0) {
+		count = priv->forget.count;
+		
+		hdrlen = gf_hdr_len (req, (count * sizeof (int64_t)));
+		hdr    = gf_hdr_new (req, (count * sizeof (int64_t)));
+		GF_VALIDATE_OR_GOTO (this->name, hdr, out);
+			
+		req    = gf_param (hdr);
+		
+		req->count = hton32 (count);
+		for (index = 0; index < count; index++) {
+			req->ino_array[index] = 
+				hton64 (priv->forget.ino_array[index]);
+		}
+		
+		fr = create_frame (this, this->ctx->pool);
+		GF_VALIDATE_OR_GOTO (this->name, fr, out);
+
+		priv->forget.frames_in_transit++;
+
+		forget->frame = fr;
+		forget->hdr   = hdr;
+		forget->hdrlen = hdrlen;
+		
+		ret = count;
+
+		priv->forget.count = 0;
+	}
+ out:
+	return ret;
+}
+
+
 int32_t
-client_protocol_xfer (call_frame_t *frame,
-		      xlator_t *this,
-		      glusterfs_op_type_t type,
-		      glusterfs_fop_t op,
-		      dict_t *request)
+protocol_client_xfer (call_frame_t *frame,
+                      xlator_t *this,
+                      int type, int op,
+                      gf_hdr_common_t *hdr, size_t hdrlen,
+                      struct iovec *vector, int count,
+                      dict_t *refs)
 {
-  int32_t ret = -1;
-  transport_t *trans;
-  client_proto_priv_t *proto_priv;
+	transport_t *trans = NULL;
+	client_private_t *priv = NULL;
+	client_connection_private_t *cprivate = NULL;
+	uint64_t callid = 0;
+	int32_t ret = -1;
+	gf_hdr_common_t rsphdr = {0, };
+	client_forget_t forget = {0, };
+	uint8_t send_forget = 0;
 
-  if (!request) {
-    gf_log (this->name, GF_LOG_ERROR, "request is NULL");
-    return -1;
-  }
+	priv  = this->private;
+	trans = priv->transport;
+	cprivate = trans->xl_private;
 
-  trans = this->private;
-  if (!trans) {
-    gf_log (this->name, GF_LOG_ERROR, "this->private is NULL");
-    return -1;
-  }
+	if (!((type == GF_OP_TYPE_CBK_REQUEST) && 
+	      (op == GF_CBK_FORGET))) 
+	{
+		LOCK (&priv->forget.lock);
+		{
+			ret = client_get_forgets (this, &forget);
+			if (ret <= 0)
+				send_forget = 0;
+			else
+				send_forget = 1;
+		}
+		UNLOCK (&priv->forget.lock);
 
-  proto_priv = trans->xl_private;
-  if (!proto_priv) {
-    gf_log (this->name, GF_LOG_ERROR, "trans->xl_private is NULL");
-    return -1;
-  }
+		if (send_forget) {
+			ret = protocol_client_xfer (forget.frame, this,
+						    GF_OP_TYPE_CBK_REQUEST, 
+						    GF_CBK_FORGET,
+						    forget.hdr, forget.hdrlen, 
+						    NULL, 0, NULL);
+		}
 
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
-  dict_set (request, "CALLER_PID", data_from_uint64 (frame->root->pid));
+	}
 
-  {
-    int64_t callid;
-    gf_block_t *blk;
-    struct iovec *vector = NULL;
-    int32_t count = 0;
-    int32_t i;
-    char connected = 0;
-    char buf[64];
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		callid = ++cprivate->callid;
 
-    pthread_mutex_lock (&proto_priv->lock);
-    {
-      callid = proto_priv->callid++;
-      connected = proto_priv->connected;
-      if (!connected) {
-	/* tricky code - taking chances:
-	   cause pipelining of handshake packet and this frame */
-	connected = (transport_connect (trans) == 0);
-	if (connected)
-	  gf_log (this->name, GF_LOG_WARNING,
-		  "attempting to pipeline request type(%d) op(%d) with handshake",
-		  type, op);
-      }
-      if (connected) {
-	snprintf (buf, 64, "%"PRId64, callid);
-	frame->op = op;
-	frame->type = type;
-	dict_set (proto_priv->saved_frames, buf,
-		  bin_to_data (frame, sizeof (frame)));
-      }
-    }
-    pthread_mutex_unlock (&proto_priv->lock);
+		hdr->callid = hton64 (callid);
+		hdr->op     = hton32 (op);
+		hdr->type   = hton32 (type);
 
-    blk = gf_block_new (callid);
-    blk->type = type;
-    blk->op = op;
-    blk->size = 0;    // obselete
-    blk->data = NULL; // obselete
-    blk->dict = request;
+		if (frame) {
+			hdr->req.uid = hton32 (frame->root->uid);
+			hdr->req.gid = hton32 (frame->root->gid);
+			hdr->req.pid = hton32 (frame->root->pid);
+		}
 
-    count = gf_block_iovec_len (blk);
-    vector = alloca (count * sizeof (*vector));
-    memset (vector, 0, count * sizeof (*vector));
+		if (cprivate->connected == 0)
+			transport_connect (trans);
 
-    gf_block_to_iovec (blk, vector, count);
-    for (i=0; i<count; i++)
-      if (!vector[i].iov_base)
-	vector[i].iov_base = alloca (vector[i].iov_len);
-    gf_block_to_iovec (blk, vector, count);
+		if (cprivate->connected ||
+		    ((type == GF_OP_TYPE_MOP_REQUEST) &&
+		     (op == GF_MOP_SETVOLUME))) {
+			ret = transport_submit (trans, (char *)hdr, hdrlen,
+						vector, count, refs);
+		}
+		
+		if ((ret >= 0) && frame) {
+			/* TODO: check this logic */
+			/* Let the slow call have be 4 times extra timeout */
 
-    if (connected) {
-      client_proto_priv_t *priv = ((transport_t *)this->private)->xl_private;
+			gettimeofday (&cprivate->last_sent, NULL);
+			save_frame (trans, frame, op, type, callid);
+		}
+		if ((op == GF_FOP_UNLINK) ||
+		    (op == GF_FOP_FSYNC) ||
+		    (op == GF_FOP_CHECKSUM) ||
+		    (op == GF_FOP_LK) ||
+		    (op == GF_FOP_FINODELK) ||
+		    (op == GF_FOP_INODELK) ||
+		    (op == GF_FOP_ENTRYLK) ||
+		    (op == GF_FOP_FENTRYLK)) {
+			cprivate->slow_op_count++;
+		}
+	}
+	pthread_mutex_unlock (&cprivate->lock);
 
-      ret = trans->ops->writev (trans, vector, count);
+	if (frame && (ret < 0)) {
+		rsphdr.op = op;
+		rsphdr.rsp.op_ret   = hton32 (-1);
+		rsphdr.rsp.op_errno = hton32 (ENOTCONN);
 
-      pthread_mutex_lock (&(priv->lock));
-      {
-	gettimeofday (&(priv->last_sent), NULL);
-      }
-      pthread_mutex_unlock (&(priv->lock));
-    }
+		if (type == GF_OP_TYPE_FOP_REQUEST) {
+			rsphdr.type = GF_OP_TYPE_FOP_REPLY;
+			gf_fops[op] (frame, &rsphdr, sizeof (rsphdr), NULL, 0);
+		} else if (type == GF_OP_TYPE_MOP_REQUEST) {
+			rsphdr.type = GF_OP_TYPE_MOP_REPLY;
+			gf_mops[op] (frame, &rsphdr, sizeof (rsphdr), NULL, 0);
+		} else {
+			rsphdr.type = GF_OP_TYPE_CBK_REPLY;
+			gf_cbks[op] (frame, &rsphdr, sizeof (rsphdr), NULL, 0);
+		}
+	}
 
-    free (blk);
-
-    if (ret != 0) {
-      if (connected) {
-	gf_log (this->name, GF_LOG_ERROR, "transport_submit failed");
-      } else {
-	dict_t *reply = get_new_dict ();
-
-	reply->is_locked = 1;
-	gf_log (this->name, GF_LOG_WARNING,
-		"not connected at the moment to submit frame type(%d) op(%d)",
-		type, op);
-	frame->root->rsp_refs = dict_ref (reply);
-	if (type == GF_OP_TYPE_FOP_REQUEST)
-	  gf_fops[op] (frame, reply);
-	else
-	  gf_mops[op] (frame, reply);
-	dict_unref (reply);
-      }
-      return -1;
-    }
-  }
-  return ret;
+	return ret;
 }
+
 
 
 /**
@@ -354,37 +492,61 @@ client_protocol_xfer (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->create
  */
- 
-int32_t 
+int32_t
 client_create (call_frame_t *frame,
-	       xlator_t *this,
-	       loc_t *loc,
-	       int32_t flags,
-	       mode_t mode,
-	       fd_t *fd)
+               xlator_t     *this,
+               loc_t        *loc,
+               int32_t       flags,
+               mode_t        mode,
+               fd_t         *fd)
 {
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  client_local_t *local = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	gf_fop_create_req_t *req = NULL;
+	size_t hdrlen = 0;
+	size_t pathlen = 0;
+	size_t baselen = 0;
+	int32_t ret = -1;
+	ino_t par = 0;
+	client_private_t *priv = this->private;
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  local->fd = fd;
-  
-  frame->local = local;
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame, default_create_cbk,
+			    priv->child,
+			    priv->child->fops->create,
+			    loc, flags, mode, fd);
+		
+		return 0;
+	}
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "FLAGS", data_from_int64 (flags));
-  dict_set (request, "MODE", data_from_int64 (mode));
+	pathlen = STRLEN_0(loc->path);
+	baselen = STRLEN_0(loc->name);
+	par = this_ino_get (loc->parent, this);
 
-  ret = client_protocol_xfer (frame,
-			      this,
-			      GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_CREATE,
-			      request);
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, pathlen + baselen);
+	hdr    = gf_hdr_new (req, pathlen + baselen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->flags   = hton32 (flags);
+	req->mode    = hton32 (mode);
+	req->par     = hton64 (par);
+	strcpy (req->path, loc->path);
+	strcpy (req->bname + pathlen, loc->name);
+
+	frame->local = fd;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_CREATE,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, fd, NULL, NULL);
+	return 0;
+
 }
 
 /**
@@ -397,49 +559,58 @@ client_create (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->open
  */
-
-int32_t 
+int32_t
 client_open (call_frame_t *frame,
-	     xlator_t *this,
-	     loc_t *loc,
-	     int32_t flags,
-	     fd_t *fd)
+             xlator_t *this,
+             loc_t *loc,
+             int32_t flags,
+             fd_t *fd)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
-  client_local_t *local = NULL;
+	int              ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	size_t           hdrlen = 0;
+	gf_fop_open_req_t *req = NULL;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
-  
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    STACK_UNWIND (frame, -1, EINVAL, fd);
-    return 0;
-  }
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_open_cbk,
+			    priv->child,
+			    priv->child->fops->open,
+			    loc, flags, fd);
+		
+		return 0;
+	}
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "FLAGS", data_from_int64 (flags));
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  local->fd = fd;
-  
-  frame->local = local;
-  
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_OPEN, request);
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  dict_destroy (request);
-  return ret;
+	req    = gf_param (hdr);
+
+	req->ino   = hton64 (ino);
+	req->flags = hton32 (flags);
+	strcpy (req->path, loc->path);
+
+	frame->local = fd;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_OPEN,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, fd);
+	return 0;
+
 }
 
 
@@ -451,38 +622,53 @@ client_open (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->stat
  */
-
-int32_t 
+int32_t
 client_stat (call_frame_t *frame,
-	     xlator_t *this,
-	     loc_t *loc)
+             xlator_t *this,
+             loc_t *loc)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t   *hdr = NULL;
+	gf_fop_stat_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int32_t ret = -1;
+	size_t  pathlen = 0;
+	ino_t   ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_stat_cbk,
+			    priv->child,
+			    priv->child->fops->stat,
+			    loc);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_STAT, request);
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->ino  = hton64 (ino);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_STAT,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -491,46 +677,60 @@ client_stat (call_frame_t *frame,
  * @frame: call frame
  * @this: this translator structure
  * @loc: location
- * @size: 
+ * @size:
  *
  * external reference through client_protocol_xlator->fops->readlink
  */
-
-
-int32_t 
+int32_t
 client_readlink (call_frame_t *frame,
-		 xlator_t *this,
-		 loc_t *loc,
-		 size_t size)
+                 xlator_t *this,
+                 loc_t *loc,
+                 size_t size)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t       *hdr = NULL;
+	gf_fop_readlink_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_readlink_cbk,
+			    priv->child,
+			    priv->child->fops->readlink,
+			    loc,
+			    size);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "LEN", data_from_int64 (size));
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_READLINK, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino  = hton64 (ino);
+	req->size = hton32 (size);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_READLINK,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -539,39 +739,67 @@ client_readlink (call_frame_t *frame,
  * @frame: call frame
  * @this: this translator structure
  * @path: pathname of node
- * @mode: 
+ * @mode:
  * @dev:
  *
  * external reference through client_protocol_xlator->fops->mknod
  */
-
-int32_t 
+int32_t
 client_mknod (call_frame_t *frame,
-	      xlator_t *this,
-	      loc_t *loc,
-	      mode_t mode,
-	      dev_t dev)
+              xlator_t *this,
+              loc_t *loc,
+              mode_t mode,
+              dev_t dev)
 {
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  client_local_t *local = NULL;
+	gf_hdr_common_t    *hdr = NULL;
+	gf_fop_mknod_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	size_t baselen = 0;
+	ino_t  par = 0;
+	client_private_t *priv = this->private;
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  frame->local = local;
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_mknod_cbk,
+			    priv->child,
+			    priv->child->fops->mknod,
+			    loc, mode, dev);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "MODE", data_from_int64 (mode));
-  dict_set (request, "DEV", data_from_int64 (dev));
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
+		return 0;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_MKNOD, request);
+	pathlen = STRLEN_0(loc->path);
+	baselen = STRLEN_0(loc->name);
+	par = this_ino_get (loc->parent, this);
 
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, pathlen + baselen);
+	hdr    = gf_hdr_new (req, pathlen + baselen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->par  = hton64 (par);
+	req->mode = hton32 (mode);
+	req->dev  = hton64 (dev);
+	strcpy (req->path, loc->path);
+	strcpy (req->bname + pathlen, loc->name);
+
+	frame->local = loc->inode;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_MKNOD,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, loc->inode, NULL);
+	return 0;
+
 }
 
 
@@ -584,33 +812,60 @@ client_mknod (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->mkdir
  */
-
-
-int32_t 
+int32_t
 client_mkdir (call_frame_t *frame,
-	      xlator_t *this,
-	      loc_t *loc,
-	      mode_t mode)
+              xlator_t *this,
+              loc_t *loc,
+              mode_t mode)
 {
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  client_local_t *local = NULL;
+	gf_hdr_common_t    *hdr = NULL;
+	gf_fop_mkdir_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	size_t baselen = 0;
+	ino_t  par = 0;
+	client_private_t *priv = this->private;
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  frame->local = local;
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_mkdir_cbk,
+			    priv->child,
+			    priv->child->fops->mkdir,
+			    loc, mode);
+		
+		return 0;
+	}
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "MODE", data_from_int64 (mode));
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
+	pathlen = STRLEN_0(loc->path);
+	baselen = STRLEN_0(loc->name);
+	par = this_ino_get (loc->parent, this);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_MKDIR, request);
+	hdrlen = gf_hdr_len (req, pathlen + baselen);
+	hdr    = gf_hdr_new (req, pathlen + baselen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  dict_destroy (request);
-  return ret;
+	req    = gf_param (hdr);
+
+	req->par  = hton64 (par);
+	req->mode = hton32 (mode);
+	strcpy (req->path, loc->path);
+	strcpy (req->bname + pathlen, loc->name);
+
+	frame->local = loc->inode;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_MKDIR,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, loc->inode, NULL);
+	return 0;
+
 }
 
 
@@ -623,57 +878,56 @@ client_mkdir (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->unlink
  */
-
-int32_t 
-client_unlink (call_frame_t *frame,
-	       xlator_t *this,
-	       loc_t *loc)
-{
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
-
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
-  
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL);
-    return 0;
-  }
-
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_UNLINK, request);
-
-  dict_destroy (request);
-  return ret;
-}
-
 int32_t
-client_rmelem (call_frame_t *frame,
-	       xlator_t *this,
-	       const char *path)
+client_unlink (call_frame_t *frame,
+               xlator_t *this,
+               loc_t *loc)
 {
-  int32_t ret = -1;
-  dict_t *request = NULL;
-    
-  request = get_new_dict();
+	gf_hdr_common_t     *hdr = NULL;
+	gf_fop_unlink_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	size_t baselen = 0;
+	ino_t  par = 0;
+	client_private_t *priv = this->private;
 
-  dict_set (request, "PATH", str_to_data ((char *)path));
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_unlink_cbk,
+			    priv->child,
+			    priv->child->fops->unlink,
+			    loc);
+		
+		return 0;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_RMELEM, request);
-  dict_destroy (request);
-  return ret;
+	pathlen = STRLEN_0(loc->path);
+	baselen = STRLEN_0(loc->name);
+	par = this_ino_get (loc->parent, this);
+
+	hdrlen = gf_hdr_len (req, pathlen + baselen);
+	hdr    = gf_hdr_new (req, pathlen + baselen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->par  = hton64 (par);
+	strcpy (req->path, loc->path);
+	strcpy (req->bname + pathlen, loc->name);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_UNLINK,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
 }
 
 /**
@@ -684,39 +938,56 @@ client_rmelem (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->rmdir
  */
-
-int32_t 
+int32_t
 client_rmdir (call_frame_t *frame,
-	      xlator_t *this,
-	      loc_t *loc)
+              xlator_t *this,
+              loc_t *loc)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t    *hdr = NULL;
+	gf_fop_rmdir_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	size_t baselen = 0;
+	ino_t  par = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_rmdir_cbk,
+			    priv->child,
+			    priv->child->fops->rmdir,
+			    loc);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	baselen = STRLEN_0(loc->name);
+	par = this_ino_get (loc->parent, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
+	hdrlen = gf_hdr_len (req, pathlen + baselen);
+	hdr    = gf_hdr_new (req, pathlen + baselen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_RMDIR, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->par  = hton64 (par);
+	strcpy (req->path, loc->path);
+	strcpy (req->bname + pathlen, loc->name);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_RMDIR,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
 }
 
 
@@ -730,32 +1001,61 @@ client_rmdir (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->symlink
  */
-
-int32_t 
+int32_t
 client_symlink (call_frame_t *frame,
-		xlator_t *this,
-		const char *linkname,
-		loc_t *loc)
+                xlator_t *this,
+                const char *linkname,
+                loc_t *loc)
 {
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  client_local_t *local = NULL;
+	int ret = -1;
+	gf_hdr_common_t      *hdr = NULL;
+	gf_fop_symlink_req_t *req = NULL;
+	size_t hdrlen  = 0;
+	size_t pathlen = 0;
+	size_t newlen  = 0;
+	size_t baselen = 0;
+	ino_t par = 0;
+	client_private_t *priv = this->private;
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  frame->local = local;
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_symlink_cbk,
+			    priv->child,
+			    priv->child->fops->symlink,
+			    linkname, loc);
+		
+		return 0;
+	}
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "SYMLINK", str_to_data ((char *)linkname));
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
+	frame->local = loc->inode;
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_SYMLINK, request);
+	pathlen = STRLEN_0 (loc->path);
+	baselen = STRLEN_0 (loc->name);
+	newlen = STRLEN_0 (linkname);
+	par = this_ino_get (loc->parent, this);
 
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, pathlen + baselen + newlen);
+	hdr    = gf_hdr_new (req, pathlen + baselen + newlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->par =  hton64 (par);
+	strcpy (req->path, loc->path);
+	strcpy (req->bname + pathlen, loc->name);
+	strcpy (req->linkname + pathlen + baselen, linkname);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_SYMLINK,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, loc->inode, NULL);
+	return 0;
+
 }
 
 
@@ -768,52 +1068,70 @@ client_symlink (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->rename
  */
-
-int32_t 
+int32_t
 client_rename (call_frame_t *frame,
-	       xlator_t *this,
-	       loc_t *oldloc,
-	       loc_t *newloc)
+               xlator_t *this,
+               loc_t *oldloc,
+               loc_t *newloc)
 {
-  int32_t ret = -1;
-  ino_t ino = 0, newino = 0;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
-  data_t *newino_data = NULL;
-  
-  if (oldloc && oldloc->inode && oldloc->inode->ctx)
-    ino_data = dict_get (oldloc->inode->ctx, this->name);
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_rename_req_t *req = NULL;
+	size_t hdrlen = 0;
+	size_t oldpathlen = 0;
+	size_t oldbaselen = 0;
+	size_t newpathlen = 0;
+	size_t newbaselen = 0;
+	ino_t  oldpar = 0;
+	ino_t  newpar = 0;
+	client_private_t *priv = this->private;
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s -> %s: returning EINVAL", 
-	    oldloc->path, newloc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_rename_cbk,
+			    priv->child,
+			    priv->child->fops->rename,
+			    oldloc, newloc);
+		
+		return 0;
+	}
 
-  if (newloc && newloc->inode && newloc->inode->ctx) {
-    newino_data = dict_get (newloc->inode->ctx, this->name);
-    if (newino_data) 
-      newino = data_to_uint64 (newino_data);
-  }
+	oldpathlen = STRLEN_0(oldloc->path);
+	oldbaselen = STRLEN_0(oldloc->name);
+	newpathlen = STRLEN_0(newloc->path);
+	newbaselen = STRLEN_0(newloc->name);
+	oldpar = this_ino_get (oldloc->parent, this);
+	newpar = this_ino_get (newloc->parent, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)oldloc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "NEWPATH", str_to_data ((char *)newloc->path));
-  dict_set (request, "NEWINODE", data_from_uint64 (newino));
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
+	hdrlen = gf_hdr_len (req, (oldpathlen + oldbaselen + 
+				   newpathlen + newbaselen));
+	hdr    = gf_hdr_new (req, (oldpathlen + oldbaselen + 
+				   newpathlen + newbaselen));
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_RENAME, request);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  dict_destroy (request);
-  return ret;
+	req    = gf_param (hdr);
+
+	req->oldpar = hton64 (oldpar);
+	req->newpar = hton64 (newpar);
+
+	strcpy (req->oldpath, oldloc->path);
+	strcpy (req->oldbname + oldpathlen, oldloc->name);
+	strcpy (req->newpath  + oldpathlen + oldbaselen, newloc->path);
+	strcpy (req->newbname + oldpathlen + oldbaselen + newpathlen, 
+		newloc->name);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_RENAME,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -828,48 +1146,64 @@ client_rename (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->link
  */
 
-int32_t 
+int32_t
 client_link (call_frame_t *frame,
-	     xlator_t *this,
-	     loc_t *oldloc,
-	     const char *newpath)
+             xlator_t *this,
+             loc_t *oldloc,
+             loc_t *newloc)
 {
-  ino_t oldino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *oldino_data = NULL;
-  client_local_t *local = NULL;
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_link_req_t *req = NULL;
+	size_t hdrlen = 0;
+	size_t oldpathlen = 0;
+	size_t newpathlen = 0;
+	size_t newbaselen = 0;
+	ino_t  oldino = 0;
+	ino_t  newpar = 0;
+	client_private_t *priv = this->private;
 
-  if (oldloc && oldloc->inode && oldloc->inode->ctx)
-    oldino_data = dict_get (oldloc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_link_cbk,
+			    priv->child,
+			    priv->child->fops->link,
+			    oldloc, newloc);
+		
+		return 0;
+	}
 
-  if (oldino_data) {
-    oldino = data_to_uint64 (oldino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, 
-	    "%s -> %s: returning EINVAL", oldloc->path, newpath);
-    TRAP_ON (oldino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL, NULL);
-    return 0;
-  }
+	oldpathlen = STRLEN_0(oldloc->path);
+	newpathlen = STRLEN_0(newloc->path);
+	newbaselen = STRLEN_0(newloc->name);
+	oldino = this_ino_get (oldloc->inode, this);
+	newpar = this_ino_get (newloc->parent, this);
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = oldloc->inode;
-  frame->local = local;
+	hdrlen = gf_hdr_len (req, oldpathlen + newpathlen + newbaselen);
+	hdr    = gf_hdr_new (req, oldpathlen + newpathlen + newbaselen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)oldloc->path));
-  dict_set (request, "INODE", data_from_uint64 (oldino));
-  dict_set (request, "LINK", str_to_data ((char *)newpath));
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
+	req    = gf_param (hdr);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_LINK, request);
+	strcpy (req->oldpath, oldloc->path);
+	strcpy (req->newpath  + oldpathlen, newloc->path);
+	strcpy (req->newbname + oldpathlen + newpathlen, newloc->name);
 
-  dict_destroy (request);
-  return ret;
+	req->oldino = hton64 (oldino);
+	req->newpar = hton64 (newpar);
+
+	frame->local = oldloc->inode;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_LINK,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, oldloc->inode, NULL);
+	return 0;
 }
 
 
@@ -878,46 +1212,61 @@ client_link (call_frame_t *frame,
  * client_chmod - chmod function for client protocol
  * @frame: call frame
  * @this: this translator structure
- * @loc: location 
+ * @loc: location
  * @mode:
  *
  * external reference through client_protocol_xlator->fops->chmod
  */
-
-int32_t 
+int32_t
 client_chmod (call_frame_t *frame,
-	      xlator_t *this,
-	      loc_t *loc,
-	      mode_t mode)
+              xlator_t *this,
+              loc_t *loc,
+              mode_t mode)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t    *hdr = NULL;
+	gf_fop_chmod_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_chmod_cbk,
+			    priv->child,
+			    priv->child->fops->chmod,
+			    loc,
+			    mode);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "MODE", data_from_int64 (mode));
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_CHMOD, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino     = hton64 (ino);
+	req->mode    = hton32 (mode);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_CHMOD,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -931,45 +1280,59 @@ client_chmod (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->chown
  */
-
-int32_t 
+int32_t
 client_chown (call_frame_t *frame,
-	      xlator_t *this,
-	      loc_t *loc,
-	      uid_t uid,
-	      gid_t gid)
+              xlator_t *this,
+              loc_t *loc,
+              uid_t uid,
+              gid_t gid)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t    *hdr = NULL;
+	gf_fop_chown_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_chown_cbk,
+			    priv->child,
+			    priv->child->fops->chown,
+			    loc,
+			    uid,
+			    gid);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "CALLER_UID", data_from_uint64 (frame->root->uid));
-  dict_set (request, "CALLER_GID", data_from_uint64 (frame->root->gid));
-  dict_set (request, "UID", data_from_uint64 (uid));
-  dict_set (request, "GID", data_from_uint64 (gid));
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_CHOWN, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino = hton64 (ino);
+	req->uid = hton32 (uid);
+	req->gid = hton32 (gid);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_CHOWN,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 /**
@@ -981,41 +1344,56 @@ client_chown (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->truncate
  */
-
-int32_t 
+int32_t
 client_truncate (call_frame_t *frame,
-		 xlator_t *this,
-		 loc_t *loc,
-		 off_t offset)
+                 xlator_t *this,
+                 loc_t *loc,
+                 off_t offset)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t       *hdr = NULL;
+	gf_fop_truncate_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_truncate_cbk,
+			    priv->child,
+			    priv->child->fops->truncate,
+			    loc,
+			    offset);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "OFFSET", data_from_int64 (offset));
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_TRUNCATE, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino    = hton64 (ino);
+	req->offset = hton64 (offset);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_TRUNCATE,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -1029,44 +1407,56 @@ client_truncate (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->utimes
  */
-
-int32_t 
+int32_t
 client_utimens (call_frame_t *frame,
-		xlator_t *this,
-		loc_t *loc,
-		struct timespec *tvp)
+                xlator_t *this,
+                loc_t *loc,
+                struct timespec *tvp)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t      *hdr = NULL;
+	gf_fop_utimens_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_utimens_cbk,
+			    priv->child,
+			    priv->child->fops->utimens,
+			    loc,
+			    tvp);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "ACTIME_SEC", data_from_int64 (tvp[0].tv_sec));
-  dict_set (request, "ACTIME_NSEC", data_from_int64 (tvp[0].tv_nsec));
-  dict_set (request, "MODTIME_SEC", data_from_int64 (tvp[1].tv_sec));
-  dict_set (request, "MODTIME_NSEC", data_from_int64 (tvp[1].tv_nsec));
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_UTIMENS, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino = hton64 (ino);
+	gf_timespec_from_timespec (req->tv, tvp);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_UTIMENS,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -1081,46 +1471,64 @@ client_utimens (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->readv
  */
-
-int32_t 
+int32_t
 client_readv (call_frame_t *frame,
-	      xlator_t *this,
-	      fd_t *fd,
-	      size_t size,
-	      off_t offset)
+              xlator_t *this,
+              fd_t *fd,
+              size_t size,
+              off_t offset)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *ctx_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_read_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_readv_cbk,
+			    priv->child,
+			    priv->child->fops->readv,
+			    fd,
+			    size,
+			    offset);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    struct iovec vec;
-    struct stat dummy = {0, };
-    vec.iov_base = "";
-    vec.iov_len = 0;
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, &vec, &dummy);
-    return 0;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd for fd_t (%p) "
+			"returning EBADFD",
+			fd);
+		STACK_UNWIND (frame, -1, EBADFD, NULL, 0, NULL);
+		return 0;
+	}
 
-  fd_str = strdup (data_to_str (ctx_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "OFFSET", data_from_int64 (offset));
-  dict_set (request, "LEN", data_from_int64 (size));
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_READ, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  freee (fd_str);
-  return ret;
+	req->fd     = hton64 (remote_fd);
+	req->size   = hton32 (size);
+	req->offset = hton64 (offset);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_READ,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return 0;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL, 0, NULL);
+	return 0;
+
 }
 
 
@@ -1135,49 +1543,68 @@ client_readv (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->writev
  */
-
-int32_t 
+int32_t
 client_writev (call_frame_t *frame,
-	       xlator_t *this,
-	       fd_t *fd,
-	       struct iovec *vector,
-	       int32_t count,
-	       off_t offset)
+               xlator_t *this,
+               fd_t *fd,
+               struct iovec *vector,
+               int32_t count,
+               off_t offset)
 {
-  int32_t ret = -1;
-  size_t size = 0, i;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *ctx_data = NULL;
+	gf_hdr_common_t    *hdr = NULL;
+	gf_fop_write_req_t *req = NULL;
+	size_t  hdrlen = 0;
+	int64_t remote_fd = -1;
+	int     ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_writev_cbk,
+			    priv->child,
+			    priv->child->fops->writev,
+			    fd,
+			    vector,
+			    count,
+			    offset);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    struct stat dummy = {0, };
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, &dummy);
-    return 0;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD",
+			fd);
+		STACK_UNWIND (frame, -1, EBADFD, NULL);
+		return 0;
+	}
 
-  for (i = 0; i<count; i++)
-    size += vector[i].iov_len;
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  fd_str = strdup (data_to_str (ctx_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "OFFSET", data_from_int64 (offset));
-  dict_set (request, "BUF", data_from_iovec (vector, count));
-  dict_set (request, "LEN", data_from_int64 (size));
+	req    = gf_param (hdr);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_WRITE, request);
+	req->fd     = hton64 (remote_fd);
+	req->size   = hton32 (iov_length (vector, count));
+	req->offset = hton64 (offset);
 
-  dict_destroy (request);
-  freee (fd_str);
-  return ret;
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_WRITE,
+				    hdr, hdrlen, vector, count,
+				    frame->root->req_refs);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -1189,25 +1616,53 @@ client_writev (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->statfs
  */
-
-int32_t 
+int32_t
 client_statfs (call_frame_t *frame,
-	       xlator_t *this,
-	       loc_t *loc)
+               xlator_t *this,
+               loc_t *loc)
 {
-  ino_t ino = 1; /* default it to root's inode number */
-  int32_t ret = -1;
-  dict_t *request = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	gf_fop_statfs_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_statfs_cbk,
+			    priv->child,
+			    priv->child->fops->statfs,
+			    loc);
+		
+		return 0;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_STATFS, request);
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->ino = hton64 (ino);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_STATFS,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -1220,96 +1675,62 @@ client_statfs (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->flush
  */
 
-int32_t 
+int32_t
 client_flush (call_frame_t *frame,
-	      xlator_t *this,
-	      fd_t *fd)
+              xlator_t *this,
+              fd_t *fd)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *ctx_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_flush_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_flush_cbk,
+			    priv->child,
+			    priv->child->fops->flush,
+			    fd);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    dict_destroy (request);
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD);
-    return 0;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD",
+			fd);
+		STACK_UNWIND (frame, -1, EBADFD);
+		return 0;
+	}
 
-  fd_str = strdup (data_to_str (ctx_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_FLUSH, request);
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  dict_destroy (request);
-  freee (fd_str);
-  return ret;
+	req    = gf_param (hdr);
+
+	req->fd = hton64 (remote_fd);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FLUSH,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return 0;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
 }
 
 
-/**
- * client_close - close function for client protocol
- * @frame: call frame
- * @this: this translator structure
- * @fd: file descriptor structure
- *
- * external reference through client_protocol_xlator->fops->close
- *
- * TODO: fd_t is top-down now... no need to do anything destructive. Also need to look into 
- *      cleanup().
- */
-
-int32_t 
-client_close (call_frame_t *frame,
-	      xlator_t *this,
-	      fd_t *fd)
-{
-  int32_t ret = -1;
-  char *key = NULL;
-  char *fd_str = NULL;
-  data_t *ctx_data = NULL;
-  transport_t *trans = NULL;
-  client_proto_priv_t *priv = NULL;
-
-  trans = frame->this->private;
-
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
-
-  if (ctx_data) {
-    dict_t *request = get_new_dict ();
-  
-    fd_str = strdup (data_to_str (ctx_data));
-    dict_set (request, "FD", data_from_dynstr (fd_str));
-    ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-				GF_FOP_CLOSE, request);
-    dict_destroy (request);
-  } else {
-    gf_log (this->name, GF_LOG_WARNING, "no valid fd found, returning");
-    STACK_UNWIND (frame, 0, 0);
-  }
-
-  priv = trans->xl_private;
-  asprintf (&key, "%p", fd);
-
-  pthread_mutex_lock (&priv->lock);
-  {
-    dict_del (priv->saved_fds, key); 
-  }
-  pthread_mutex_unlock (&priv->lock);
-  
-  freee (key);
-
-  return ret;
-}
 
 
 /**
@@ -1322,58 +1743,225 @@ client_close (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->fsync
  */
 
-int32_t 
+int32_t
 client_fsync (call_frame_t *frame,
-	      xlator_t *this,
-	      fd_t *fd,
-	      int32_t flags)
+              xlator_t *this,
+              fd_t *fd,
+              int32_t flags)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *ctx_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_fsync_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int32_t ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_fsync_cbk,
+			    priv->child,
+			    priv->child->fops->fsync,
+			    fd,
+			    flags);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD);
-    return 0;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		STACK_UNWIND(frame, -1, EBADFD);
+		return 0;
+	}
 
-  request = get_new_dict ();
-  
-  fd_str = strdup (data_to_str (ctx_data));
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "FLAGS", data_from_int64 (flags));
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_FSYNC, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  freee (fd_str);
-  return ret;
+	req->fd   = hton64 (remote_fd);
+	req->data = hton32 (flags);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FSYNC,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
+}
+
+int32_t
+client_xattrop (call_frame_t *frame,
+		xlator_t *this,
+		loc_t *loc,
+		gf_xattrop_flags_t flags,
+		dict_t *dict)
+{
+	gf_hdr_common_t      *hdr = NULL;
+	gf_fop_xattrop_req_t *req = NULL;
+	size_t  hdrlen = 0;
+	size_t  dict_len = 0;
+	int32_t ret = -1;
+	size_t  pathlen = 0;
+	ino_t   ino = 0;
+	client_private_t *priv = NULL;
+
+	GF_VALIDATE_OR_GOTO("client", this, unwind);
+
+	priv = this->private;
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_xattrop_cbk,
+			    priv->child,
+			    priv->child->fops->xattrop,
+			    loc,
+			    flags,
+			    dict);
+		
+		return 0;
+	}
+
+	GF_VALIDATE_OR_GOTO(this->name, loc, unwind);
+
+	if (dict) {
+		dict_len = dict_serialized_length (dict);
+		if (dict_len < 0) {
+			gf_log (this->name, GF_LOG_ERROR,
+				"failed to get serialized length of dict(%p)",
+				dict);
+			goto unwind;
+		}
+	}
+
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
+
+	hdrlen = gf_hdr_len (req, dict_len + pathlen);
+	hdr    = gf_hdr_new (req, dict_len + pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->flags = hton32 (flags);
+	req->dict_len = hton32 (dict_len);
+	if (dict) {
+		ret = dict_serialize (dict, req->dict);
+		if (ret < 0) {
+			gf_log (this->name, GF_LOG_ERROR,
+				"failed to serialize dictionary(%p)",
+				dict);
+			goto unwind;
+		}
+	}
+	req->ino = hton64 (ino);
+	strcpy (req->path + dict_len, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_XATTROP,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
 }
 
 
 int32_t
-client_incver (call_frame_t *frame,
-	       xlator_t *this,
-	       const char *path)
+client_fxattrop (call_frame_t *frame,
+		 xlator_t *this,
+		 fd_t *fd,
+		 gf_xattrop_flags_t flags,
+		 dict_t *dict)
 {
-  int32_t ret = -1;
-  dict_t *request = get_new_dict();
+	gf_hdr_common_t      *hdr = NULL;
+	gf_fop_fxattrop_req_t *req = NULL;
+	size_t  hdrlen = 0;
+	size_t  dict_len = 0;
+	int64_t remote_fd = -1;
+	int32_t ret = -1;
+	ino_t   ino = 0;
+	client_private_t *priv = this->private;
 
-  dict_set (request, "PATH", str_to_data ((char *) path));
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_fxattrop_cbk,
+			    priv->child,
+			    priv->child->fops->fxattrop,
+			    fd,
+			    flags,
+			    dict);
+		
+		return 0;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_INCVER, request);
+	if (dict) {
+		dict_len = dict_serialized_length (dict);
+		if (dict_len < 0) {
+			gf_log (this->name, GF_LOG_ERROR,
+				"failed to get serialized length of dict(%p)",
+				dict);
+			goto unwind;
+		}
+	}
 
-  dict_destroy (request);
-  return ret;
+	if (fd) {
+		ret = this_fd_get (fd, this, &remote_fd);
+		if (ret == -1) {
+			/* TODO: This log doesn't make sense */
+			gf_log (this->name, GF_LOG_DEBUG,
+				"failed to get remote fd from fd_t(%p). "
+				"returning EBADFD", fd);
+			goto unwind;
+		}
+		ino = fd->inode->ino;
+	}
+
+	hdrlen = gf_hdr_len (req, dict_len);
+	hdr    = gf_hdr_new (req, dict_len);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->flags = hton32 (flags);
+	req->dict_len = hton32 (dict_len);
+	if (dict) {
+		ret = dict_serialize (dict, req->dict);
+		if (ret < 0) {
+			gf_log (this->name, GF_LOG_ERROR,
+				"failed to serialize dictionary(%p)",
+				dict);
+			goto unwind;
+		}
+	}
+	req->fd = hton64 (remote_fd);
+	req->ino = hton64 (ino);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FXATTROP,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND (frame, -1, EBADFD, NULL);
+	return 0;
+
 }
 
 
@@ -1387,56 +1975,77 @@ client_incver (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->setxattr
  */
-
-int32_t 
+int32_t
 client_setxattr (call_frame_t *frame,
-		 xlator_t *this,
-		 loc_t *loc,
-		 dict_t *dict,
-		 int32_t flags)
+                 xlator_t *this,
+                 loc_t *loc,
+                 dict_t *dict,
+                 int32_t flags)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;  
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t       *hdr = NULL;
+	gf_fop_setxattr_req_t *req = NULL;
+	size_t hdrlen = 0;
+	size_t dict_len = 0;
+	int    ret = -1;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_setxattr_cbk,
+			    priv->child,
+			    priv->child->fops->setxattr,
+			    loc,
+			    dict,
+			    flags);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    if (!strncmp (loc->path, "/", 2)) {
-      ino = 1;
-    } else {
-      gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-      TRAP_ON (ino_data == NULL);
-      frame->root->rsp_refs = NULL;
-      STACK_UNWIND (frame, -1, EINVAL);
-      return 0;
-    }
-  }
+	dict_len = dict_serialized_length (dict);
+	if (dict_len < 0) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to get serialized length of dict(%p)",
+			dict);
+		goto unwind;
+	}
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "FLAGS", data_from_int64 (flags));
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
 
-  {
-    /* Serialize the dictionary and set it as a parameter in 'request' dict */
-    int32_t len = dict_serialized_length (dict);
-    char *dict_buf = alloca (len);
-    dict_serialize (dict, dict_buf);
-    dict_set (request, "DICT", bin_to_data (dict_buf, len));
-  }
+	hdrlen = gf_hdr_len (req, dict_len + pathlen);
+	hdr    = gf_hdr_new (req, dict_len + pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_SETXATTR, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino   = hton64 (ino);
+	req->flags = hton32 (flags);
+	req->dict_len = hton32 (dict_len);
+
+	ret = dict_serialize (dict, req->dict);
+	if (ret < 0) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to serialize dictionary(%p)",
+			dict);
+		goto unwind;
+	}
+
+	strcpy (req->path + dict_len, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_SETXATTR,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
 }
-
 
 /**
  * client_getxattr - getxattr function for client protocol
@@ -1446,39 +2055,61 @@ client_setxattr (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->getxattr
  */
-
-int32_t 
+int32_t
 client_getxattr (call_frame_t *frame,
-		 xlator_t *this,
-		 loc_t *loc)
+                 xlator_t *this,
+                 loc_t *loc,
+                 const char *name)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;  
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_getxattr_req_t *req = NULL;
+	size_t hdrlen = 0;
+	size_t pathlen = 0;
+	size_t namelen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_getxattr_cbk,
+			    priv->child,
+			    priv->child->fops->getxattr,
+			    loc,
+			    name);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	if (name)
+		namelen = STRLEN_0(name);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
+	ino = this_ino_get (loc->inode, this);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_GETXATTR, request);
+	hdrlen = gf_hdr_len (req, pathlen + namelen);
+	hdr    = gf_hdr_new (req, pathlen + namelen);
+	GF_VALIDATE_OR_GOTO(frame->this->name, hdr, unwind);
 
-  dict_destroy (request);
-  return ret;
+	req    = gf_param (hdr);
+
+	req->ino   = hton64 (ino);
+	req->namelen = hton32 (namelen);
+	strcpy (req->path, loc->path);
+	if (name)
+		strcpy (req->name + pathlen, name);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_GETXATTR,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
 }
 
 /**
@@ -1490,41 +2121,56 @@ client_getxattr (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->removexattr
  */
-	     
-int32_t 
+int32_t
 client_removexattr (call_frame_t *frame,
-		    xlator_t *this,
-		    loc_t *loc,
-		    const char *name)
+                    xlator_t *this,
+                    loc_t *loc,
+                    const char *name)
 {
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_removexattr_req_t *req = NULL;
+	size_t hdrlen = 0;
+	size_t namelen = 0;
+	size_t pathlen = 0;
+	ino_t  ino = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_removexattr_cbk,
+			    priv->child,
+			    priv->child->fops->removexattr,
+			    loc,
+			    name);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL);
-    return 0;
-  }
+	pathlen = STRLEN_0(loc->path);
+	namelen = STRLEN_0(name);
+	ino = this_ino_get (loc->inode, this);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "NAME", str_to_data ((char *)name));
+	hdrlen = gf_hdr_len (req, pathlen + namelen);
+	hdr    = gf_hdr_new (req, pathlen + namelen);
+	GF_VALIDATE_OR_GOTO(frame->this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_REMOVEXATTR, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino   = hton64 (ino);
+	strcpy (req->path, loc->path);
+	strcpy (req->name + pathlen, name);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_REMOVEXATTR,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
 }
 
 
@@ -1536,46 +2182,56 @@ client_removexattr (call_frame_t *frame,
  *
  * external reference through client_protocol_xlator->fops->opendir
  */
-
-int32_t 
+int32_t
 client_opendir (call_frame_t *frame,
-		xlator_t *this,
-		loc_t *loc,
-		fd_t *fd)
+                xlator_t *this,
+                loc_t *loc,
+                fd_t *fd)
 {
-  int32_t ret = -1;
-  ino_t ino = 0;
-  data_t *ino_data = NULL;
-  dict_t *request = NULL;
-  client_local_t *local = NULL;
+	gf_fop_opendir_req_t *req = NULL;
+	gf_hdr_common_t      *hdr = NULL;
+	size_t hdrlen = 0;
+	int    ret = -1;
+	ino_t  ino = 0;
+	size_t pathlen = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_opendir_cbk,
+			    priv->child,
+			    priv->child->fops->opendir,
+			    loc, fd);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, fd);
-    return 0;
-  }
+	ino = this_ino_get (loc->inode, this);
+	pathlen = STRLEN_0(loc->path);
 
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  local->fd = fd;
-  frame->local = local;
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(frame->this->name, hdr, unwind);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
+	req    = gf_param (hdr);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_OPENDIR, request);
+	req->ino = hton64 (ino);
+	strcpy (req->path, loc->path);
 
-  dict_destroy (request);
-  return ret;
+	frame->local = fd;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_OPENDIR,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, fd);
+	return 0;
+
 }
 
 
@@ -1587,43 +2243,65 @@ client_opendir (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->readdir
  */
 
-int32_t 
+int32_t
 client_getdents (call_frame_t *frame,
-		 xlator_t *this,
-		 fd_t *fd,
-		 size_t size,
-		 off_t offset,
-		 int32_t flag)
+                 xlator_t *this,
+                 fd_t *fd,
+                 size_t size,
+                 off_t offset,
+                 int32_t flag)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *fd_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_getdents_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    fd_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_getdents_cbk,
+			    priv->child,
+			    priv->child->fops->getdents,
+			    fd,
+			    size,
+			    offset,
+			    flag);
+		
+		return 0;
+	}
 
-  if (!fd_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (fd_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, NULL, 0);
-    return 0;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		STACK_UNWIND (frame, -1, EBADFD, NULL);
+		return 0;
+	}
 
-  fd_str = strdup (data_to_str (fd_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "OFFSET", data_from_uint64 (offset));
-  dict_set (request, "SIZE", data_from_uint64 (size));
-  dict_set (request, "FLAG", data_from_uint32 (flag));
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(frame->this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_GETDENTS, request);
-  
-  freee (fd_str);
-  dict_destroy (request);
-  return ret;
+	req    = gf_param (hdr);
+	GF_VALIDATE_OR_GOTO(frame->this->name, hdr, unwind);
+
+	req->fd     = hton64 (remote_fd);
+	req->size   = hton32 (size);
+	req->offset = hton64 (offset);
+	req->flags  = hton32 (flag);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_GETDENTS,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return 0;
+unwind:
+	STACK_UNWIND(frame, -1, EINVAL, NULL, 0);
+	return 0;
 }
 
 /**
@@ -1634,97 +2312,64 @@ client_getdents (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->readdir
  */
 
-int32_t 
+int32_t
 client_readdir (call_frame_t *frame,
-		 xlator_t *this,
-		 fd_t *fd,
-		 size_t size,
-		 off_t offset)
+		xlator_t *this,
+		fd_t *fd,
+		size_t size,
+		off_t offset)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  data_t *fd_data = NULL;
-  dict_t *request = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_readdir_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    fd_data = dict_get (fd->ctx, this->name);
-  
-  if (!fd_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (fd_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, NULL, 0);
-    return 0;
-  }
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_readdir_cbk,
+			    priv->child,
+			    priv->child->fops->readdir,
+			    fd, size, offset);
+		
+		return 0;
+	}
 
-  fd_str = strdup (data_to_str (fd_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "OFFSET", data_from_uint64 (offset));
-  dict_set (request, "SIZE", data_from_uint64 (size));
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		goto unwind;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_READDIR, request);
-  
-  freee (fd_str);
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req->fd     = hton64 (remote_fd);
+	req->size   = hton32 (size);
+	req->offset = hton64 (offset);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_READDIR,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return 0;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND (frame, -1, EBADFD, NULL);
+	return 0;
+
 }
 
-
-/**
- * client_closedir - closedir function for client protocol
- * @frame: call frame
- * @this: this translator structure
- * @fd: file descriptor structure
- *
- * external reference through client_protocol_xlator->fops->closedir
- */
-
-int32_t 
-client_closedir (call_frame_t *frame,
-		 xlator_t *this,
-		 fd_t *fd)
-{
-  int32_t ret = -1;
-  char *key = NULL;
-  char *fd_str = NULL;
-  data_t *ctx_data = NULL;
-  transport_t *trans = NULL;
-  client_proto_priv_t *priv = NULL;
-
-  trans = frame->this->private;
-
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
-
-  if (ctx_data) {
-    dict_t *request = get_new_dict ();
-  
-    fd_str = strdup (data_to_str (ctx_data));
-    dict_set (request, "FD", data_from_dynstr (fd_str));
-
-    ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-				GF_FOP_CLOSEDIR, request);
-    dict_destroy (request);
-  } else {
-    gf_log (this->name, GF_LOG_WARNING, "no proper fd found, returning");
-    STACK_UNWIND (frame, 0, 0);
-  }
-
-  priv = trans->xl_private;
-  asprintf (&key, "%p", fd);
-
-  pthread_mutex_lock (&priv->lock);
-  {
-    dict_del (priv->saved_fds, key); 
-  }
-  pthread_mutex_unlock (&priv->lock);
-  
-  free (key);
-
-  return ret;
-}
 
 
 /**
@@ -1737,31 +2382,57 @@ client_closedir (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->fsyncdir
  */
 
-int32_t 
+int32_t
 client_fsyncdir (call_frame_t *frame,
-		 xlator_t *this,
-		 fd_t *fd,
-		 int32_t flags)
+                 xlator_t *this,
+                 fd_t *fd,
+                 int32_t flags)
 {
-  int32_t ret = -1;
-  data_t *ctx_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_fsyncdir_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int32_t ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_fsyncdir_cbk,
+			    priv->child,
+			    priv->child->fops->fsyncdir,
+			    fd,
+			    flags);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD);
-    return -1;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		goto unwind;
+	}
 
-  gf_log (this->name, GF_LOG_ERROR, "Function not implemented");
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  frame->root->rsp_refs = NULL;
-  STACK_UNWIND (frame, -1, ENOSYS);
-  return ret;
+	req    = gf_param (hdr);
+
+	req->data = hton32 (flags);
+	req->fd   = hton64 (remote_fd);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FSYNCDIR,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	STACK_UNWIND (frame, -1, EBADFD);
+	return 0;
 }
 
 
@@ -1770,45 +2441,61 @@ client_fsyncdir (call_frame_t *frame,
  * @frame: call frame
  * @this: this translator structure
  * @loc: location structure
- * @mode: 
+ * @mode:
  *
  * external reference through client_protocol_xlator->fops->access
  */
-
-int32_t 
+int32_t
 client_access (call_frame_t *frame,
-	       xlator_t *this,
-	       loc_t *loc,
-	       int32_t mask)
+               xlator_t *this,
+               loc_t *loc,
+               int32_t mask)
 {
-  ino_t ino = 1;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	gf_fop_access_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	ino_t  ino = 0;
+	size_t pathlen = 0;
+	client_private_t *priv = this->private;
 
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_access_cbk,
+			    priv->child,
+			    priv->child->fops->access,
+			    loc,
+			    mask);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else if (strncmp (loc->path, "/", 2)) {
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    TRAP_ON (ino_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL, NULL);
-    return 0;
-  }
+	ino = this_ino_get (loc->inode, this);
+	pathlen = STRLEN_0(loc->path);
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "MODE", data_from_int64 (mask));
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_ACCESS, request);
+	req    = gf_param (hdr);
 
-  dict_destroy (request);
-  return ret;
+	req->ino  = hton64 (ino);
+	req->mask = hton32 (mask);
+	strcpy (req->path, loc->path);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_ACCESS,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
 }
 
 
@@ -1822,39 +2509,62 @@ client_access (call_frame_t *frame,
  * external reference through client_protocol_xlator->fops->ftruncate
  */
 
-int32_t 
+int32_t
 client_ftruncate (call_frame_t *frame,
-		  xlator_t *this,
-		  fd_t *fd,
-		  off_t offset)
+                  xlator_t *this,
+                  fd_t *fd,
+                  off_t offset)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *ctx_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_ftruncate_req_t *req = NULL;
+	int64_t remote_fd = -1;
+	size_t hdrlen = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_ftruncate_cbk,
+			    priv->child,
+			    priv->child->fops->ftruncate,
+			    fd,
+			    offset);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, NULL);
-    return 0;
-  }
-  
-  fd_str = strdup (data_to_str (ctx_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "OFFSET", data_from_int64 (offset));
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		STACK_UNWIND (frame, -1, EBADFD, NULL);
+		return 0;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_FTRUNCATE, request);
-  
-  freee (fd_str);
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->fd     = hton64 (remote_fd);
+	req->offset = hton64 (offset);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FTRUNCATE,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
 
 
@@ -1862,43 +2572,67 @@ client_ftruncate (call_frame_t *frame,
  * client_fstat - fstat function for client protocol
  * @frame: call frame
  * @this: this translator structure
- * @fd: file descriptor structure 
+ * @fd: file descriptor structure
  *
  * external reference through client_protocol_xlator->fops->fstat
  */
 
-int32_t 
+int32_t
 client_fstat (call_frame_t *frame,
-	      xlator_t *this,
-	      fd_t *fd)
+              xlator_t *this,
+              fd_t *fd)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *fd_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_fstat_req_t *req = NULL;
+	int64_t remote_fd = -1;
+	size_t hdrlen = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    fd_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_fstat_cbk,
+			    priv->child,
+			    priv->child->fops->fstat,
+			    fd);
+		
+		return 0;
+	}
 
-  if (!fd_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (fd_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, NULL);
-    return 0;
-  }
-  
-  fd_str = strdup (data_to_str (fd_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD",
+			fd);
+		STACK_UNWIND (frame, -1, EBADFD, NULL);
+		return 0;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_FSTAT, request);
-  
-  freee (fd_str);
-  dict_destroy (request);
-  return ret;
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->fd = hton64 (remote_fd);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FSTAT,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
+
 }
+
 
 /**
  * client_lk - lk function for client protocol
@@ -1906,197 +2640,422 @@ client_fstat (call_frame_t *frame,
  * @this: this translator structure
  * @fd: file descriptor structure
  * @cmd: lock command
- * @lock: 
+ * @lock:
  *
  * external reference through client_protocol_xlator->fops->lk
  */
-
-int32_t 
+int32_t
 client_lk (call_frame_t *frame,
-	   xlator_t *this,
-	   fd_t *fd,
-	   int32_t cmd,
-	   struct flock *lock)
+           xlator_t *this,
+           fd_t *fd,
+           int32_t cmd,
+           struct flock *flock)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *ctx_data = NULL;
-  int32_t gf_cmd = 0;
-  int32_t gf_type = 0;
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_lk_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int64_t remote_fd = -1;
+	int32_t gf_cmd = 0;
+	int32_t gf_type = 0;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    ctx_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_lk_cbk,
+			    priv->child,
+			    priv->child->fops->lk,
+			    fd,
+			    cmd,
+			    flock);
+		
+		return 0;
+	}
 
-  if (!ctx_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (ctx_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD, NULL);
-    return 0;
-  }
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD",
+			fd);
+		STACK_UNWIND(frame, -1, EBADFD, NULL);
+		return 0;
+	}
 
+	if (cmd == F_GETLK || cmd == F_GETLK64)
+		gf_cmd = GF_LK_GETLK;
+	else if (cmd == F_SETLK || cmd == F_SETLK64)
+		gf_cmd = GF_LK_SETLK;
+	else if (cmd == F_SETLKW || cmd == F_SETLKW64)
+		gf_cmd = GF_LK_SETLKW;
+	else {
+		gf_log (this->name, GF_LOG_ERROR,
+			"Unknown cmd (%d)!", gf_cmd);
+		goto unwind;
+	}
 
-  if (cmd == F_GETLK || cmd == F_GETLK64)
-    gf_cmd = GF_LK_GETLK;
-  else if (cmd == F_SETLK || cmd == F_SETLK64)
-    gf_cmd = GF_LK_SETLK;
-  else if (cmd == F_SETLKW || cmd == F_SETLKW64)
-    gf_cmd = GF_LK_SETLKW;
-  else
-    gf_log (this->name, GF_LOG_ERROR, "Unknown cmd (%d)!", gf_cmd);
+	switch (flock->l_type) {
+	case F_RDLCK:
+		gf_type = GF_LK_F_RDLCK;
+		break;
+	case F_WRLCK:
+		gf_type = GF_LK_F_WRLCK;
+		break;
+	case F_UNLCK:
+		gf_type = GF_LK_F_UNLCK;
+		break;
+	}
 
-  switch (lock->l_type) {
-  case F_RDLCK: gf_type = GF_LK_F_RDLCK; break;
-  case F_WRLCK: gf_type = GF_LK_F_WRLCK; break;
-  case F_UNLCK: gf_type = GF_LK_F_UNLCK; break;
-  }
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  fd_str = strdup (data_to_str (ctx_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "CMD", data_from_int32 (gf_cmd));
-  dict_set (request, "TYPE", data_from_int16 (gf_type));
-  dict_set (request, "WHENCE", data_from_int16 (lock->l_whence));
-  dict_set (request, "START", data_from_int64 (lock->l_start));
-  dict_set (request, "LEN", data_from_int64 (lock->l_len));
-  dict_set (request, "PID", data_from_uint64 (lock->l_pid));
-  dict_set (request, "CLIENT_PID", data_from_uint64 (getpid ()));
+	req    = gf_param (hdr);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_LK, request);
+	req->fd   = hton64 (remote_fd);
+	req->cmd  = hton32 (gf_cmd);
+	req->type = hton32 (gf_type);
+	gf_flock_from_flock (&req->flock, flock);
 
-  freee (fd_str);
-  dict_destroy (request);
-  return ret;
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST,
+				    GF_FOP_LK,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
 }
 
-/** 
- * client_writedir - 
+
+/**
+ * client_inodelk - inodelk function for client protocol
+ * @frame: call frame
+ * @this: this translator structure
+ * @inode: inode structure
+ * @cmd: lock command
+ * @lock: flock struct
+ *
+ * external reference through client_protocol_xlator->fops->inodelk
  */
 int32_t
-client_setdents (call_frame_t *frame,
+client_inodelk (call_frame_t *frame,
+		xlator_t *this,
+		loc_t *loc,
+		int32_t cmd,
+		struct flock *flock)
+{
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_inodelk_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int32_t gf_cmd = 0;
+	int32_t gf_type = 0;
+	ino_t   ino  = 0;
+	size_t  pathlen = 0;
+	client_private_t *priv = this->private;
+
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_inodelk_cbk,
+			    priv->child,
+			    priv->child->fops->inodelk,
+			    loc, cmd, flock);
+		
+		return 0;
+	}
+
+	pathlen = STRLEN_0(loc->path);
+	ino = this_ino_get (loc->inode, this);
+
+	if (cmd == F_GETLK || cmd == F_GETLK64)
+		gf_cmd = GF_LK_GETLK;
+	else if (cmd == F_SETLK || cmd == F_SETLK64)
+		gf_cmd = GF_LK_SETLK;
+	else if (cmd == F_SETLKW || cmd == F_SETLKW64)
+		gf_cmd = GF_LK_SETLKW;
+	else {
+		gf_log (this->name, GF_LOG_ERROR,
+			"Unknown cmd (%d)!", gf_cmd);
+		goto unwind;
+	}
+
+	switch (flock->l_type) {
+	case F_RDLCK:
+		gf_type = GF_LK_F_RDLCK;
+		break;
+	case F_WRLCK:
+		gf_type = GF_LK_F_WRLCK;
+		break;
+	case F_UNLCK:
+		gf_type = GF_LK_F_UNLCK;
+		break;
+	}
+
+	hdrlen = gf_hdr_len (req, pathlen);
+	hdr    = gf_hdr_new (req, pathlen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	strcpy (req->path, loc->path);
+
+	req->ino  = hton64 (ino);
+
+	req->cmd  = hton32 (gf_cmd);
+	req->type = hton32 (gf_type);
+	gf_flock_from_flock (&req->flock, flock);
+
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST,
+				    GF_FOP_INODELK,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
+}
+
+
+/**
+ * client_finodelk - finodelk function for client protocol
+ * @frame: call frame
+ * @this: this translator structure
+ * @inode: inode structure
+ * @cmd: lock command
+ * @lock: flock struct
+ *
+ * external reference through client_protocol_xlator->fops->finodelk
+ */
+int32_t
+client_finodelk (call_frame_t *frame,
 		 xlator_t *this,
 		 fd_t *fd,
-		 int32_t flags,
-		 dir_entry_t *entries,
-		 int32_t count)
+		 int32_t cmd,
+		 struct flock *flock)
 {
-  int32_t ret = -1;
-  char *buffer = NULL;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *fd_data = NULL;
+	int ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_finodelk_req_t *req = NULL;
+	size_t hdrlen = 0;
+	int32_t gf_cmd = 0;
+	int32_t gf_type = 0;
+	int64_t remote_fd = -1;
+	client_private_t *priv = this->private;
 
-  if (!entries || !count) {
-    /* No log is required as this can happen frequently */
-    STACK_UNWIND (frame, -1, EINVAL);
-    return 0;
-  }
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_finodelk_cbk,
+			    priv->child,
+			    priv->child->fops->finodelk,
+			    fd, cmd, flock);
+		
+		return 0;
+	}
 
-  if (fd && fd->ctx)
-    fd_data = dict_get (fd->ctx, this->name);
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		STACK_UNWIND(frame, -1, EBADFD);
+		return 0;
+	}
 
-  if (!fd_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (fd_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD);
-    return 0;
-  }
+	if (cmd == F_GETLK || cmd == F_GETLK64)
+		gf_cmd = GF_LK_GETLK;
+	else if (cmd == F_SETLK || cmd == F_SETLK64)
+		gf_cmd = GF_LK_SETLK;
+	else if (cmd == F_SETLKW || cmd == F_SETLKW64)
+		gf_cmd = GF_LK_SETLKW;
+	else {
+		gf_log (this->name, GF_LOG_ERROR,
+			"Unknown cmd (%d)!", gf_cmd);
+		goto unwind;
+	}
 
-  
-  fd_str = strdup (data_to_str (fd_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "FLAGS", data_from_int32 (flags));
-  dict_set (request, "NR_ENTRIES", data_from_int32 (count));
+	switch (flock->l_type) {
+	case F_RDLCK:
+		gf_type = GF_LK_F_RDLCK;
+		break;
+	case F_WRLCK:
+		gf_type = GF_LK_F_WRLCK;
+		break;
+	case F_UNLCK:
+		gf_type = GF_LK_F_UNLCK;
+		break;
+	}
 
-  {   
-    dir_entry_t *trav = entries->next;
-    uint32_t len = 0;
-    char *ptr = NULL;
-    while (trav) {
-      len += strlen (trav->name);
-      len += 1;
-      len += strlen (trav->link);
-      len += 1;
-      len += 256; // max possible for statbuf;
-      trav = trav->next;
-    }
-    buffer = calloc (1, len);
-    ptr = buffer;
-    trav = entries->next;
-    while (trav) {
-      int32_t this_len = 0;
-      char *tmp_buf = NULL;
-      struct stat *stbuf = &trav->buf;
-      {
-	/* Convert the stat buf to string */
-	uint64_t dev = stbuf->st_dev;
-	uint64_t ino = stbuf->st_ino;
-	uint32_t mode = stbuf->st_mode;
-	uint32_t nlink = stbuf->st_nlink;
-	uint32_t uid = stbuf->st_uid;
-	uint32_t gid = stbuf->st_gid;
-	uint64_t rdev = stbuf->st_rdev;
-	uint64_t size = stbuf->st_size;
-	uint32_t blksize = stbuf->st_blksize;
-	uint64_t blocks = stbuf->st_blocks;
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-	uint32_t atime = stbuf->st_atime;
-	uint32_t mtime = stbuf->st_mtime;
-	uint32_t ctime = stbuf->st_ctime;
+	req    = gf_param (hdr);
 
-#ifdef HAVE_TV_NSEC
-	uint32_t atime_nsec = stbuf->st_atim.tv_nsec;
-	uint32_t mtime_nsec = stbuf->st_mtim.tv_nsec;
-	uint32_t ctime_nsec = stbuf->st_ctim.tv_nsec;
-#else
-	uint32_t atime_nsec = 0;
-	uint32_t mtime_nsec = 0;
-	uint32_t ctime_nsec = 0;
-#endif
+	req->fd = hton64 (remote_fd);
 
-	asprintf (&tmp_buf,
-		  GF_STAT_PRINT_FMT_STR,
-		  dev,
-		  ino,
-		  mode,
-		  nlink,
-		  uid,
-		  gid,
-		  rdev,
-		  size,
-		  blksize,
-		  blocks,
-		  atime,
-		  atime_nsec,
-		  mtime,
-		  mtime_nsec,
-		  ctime,
-		  ctime_nsec);
-      }
-      this_len = sprintf (ptr, "%s/%s%s\n", 
-			  trav->name,
-			  tmp_buf,
-			  trav->link);
-      
-      free (tmp_buf);
-      trav = trav->next;
-      ptr += this_len;
-    }
-    dict_set (request, "DENTRIES", data_from_dynstr (buffer));
-  }
-  
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_SETDENTS, request);
+	req->cmd  = hton32 (gf_cmd);
+	req->type = hton32 (gf_type);
+	gf_flock_from_flock (&req->flock, flock);
 
-  freee (fd_str);
-  dict_destroy (request);
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST,
+				    GF_FOP_FINODELK,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
 
-  return ret;
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
 }
+
+
+int32_t
+client_entrylk (call_frame_t *frame,
+		xlator_t *this,
+		loc_t *loc,
+		const char *name,
+		entrylk_cmd cmd,
+		entrylk_type type)
+{
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_entrylk_req_t *req = NULL;
+	size_t pathlen = 0;
+	size_t hdrlen = -1;
+	int ret = -1;
+	ino_t ino = 0;
+	size_t namelen = 0;
+	client_private_t *priv = this->private;
+
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame, default_entrylk_cbk,
+			    priv->child,
+			    priv->child->fops->entrylk,
+			    loc, name, cmd, type);
+		
+		return 0;
+	}
+
+	pathlen = STRLEN_0(loc->path);
+	if (name)
+		namelen = STRLEN_0(name);
+
+	ino = this_ino_get (loc->inode, this);
+
+	hdrlen = gf_hdr_len (req, pathlen + namelen);
+	hdr    = gf_hdr_new (req, pathlen + namelen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->ino  = hton64 (ino);
+	req->namelen = hton64 (namelen);
+
+	strcpy (req->path, loc->path);
+	if (name)
+		strcpy (req->name + pathlen, name);
+
+	req->cmd  = hton32 (cmd);
+	req->type = hton32 (type);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_ENTRYLK,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+
+}
+
+
+int32_t
+client_fentrylk (call_frame_t *frame,
+		 xlator_t *this,
+		 fd_t *fd,
+		 const char *name,
+		 entrylk_cmd cmd,
+		 entrylk_type type)
+{
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_fentrylk_req_t *req = NULL;
+	int64_t remote_fd = -1;
+	size_t namelen = 0;
+	size_t hdrlen = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
+
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame, default_fentrylk_cbk,
+			    priv->child,
+			    priv->child->fops->fentrylk,
+			    fd, name, cmd, type);
+		
+		return 0;
+	}
+
+	if (name)
+		namelen = STRLEN_0(name);
+
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		STACK_UNWIND(frame, -1, EBADFD);
+		return 0;
+	}
+
+	hdrlen = gf_hdr_len (req, namelen);
+	hdr    = gf_hdr_new (req, namelen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->fd = hton64 (remote_fd);
+	req->namelen = hton64 (namelen);
+
+	if (name)
+		strcpy (req->name, name);
+
+	req->cmd  = hton32 (cmd);
+	req->type = hton32 (type);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FENTRYLK,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+
+	STACK_UNWIND(frame, -1, EINVAL);
+	return 0;
+}
+
 
 /*
  * client_lookup - lookup function for client protocol
@@ -2106,79 +3065,74 @@ client_setdents (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
-client_lookup (call_frame_t *frame,
-	       xlator_t *this,
-	       loc_t *loc,
-	       int32_t need_xattr)
-{
-  ino_t ino = 0;
-  int32_t ret = -1;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
-  client_local_t *local = NULL;
-
-  if (loc && loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
-
-  if (ino_data) {
-    /* revalidate */
-    ino = data_to_uint64 (ino_data);
-  }
-
-  local = calloc (1, sizeof (client_local_t));
-  local->inode = loc->inode;
-  frame->local = local;
-
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "NEED_XATTR", data_from_int32 (need_xattr));
-
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_LOOKUP, request);
-  
-  dict_destroy (request);
-  return ret;
-}
-
-/*
- * client_forget - forget function for client protocol
- * @frame: call frame
- * @this:
- * @inode:
- * 
- * not for external reference
- */
 int32_t
-client_forget (call_frame_t *frame,
-	       xlator_t *this,
-	       inode_t *inode)
+client_lookup (call_frame_t *frame,
+               xlator_t *this,
+               loc_t *loc,
+               int32_t need_xattr)
 {
-  ino_t ino = 0;
-  int32_t ret = 0;
-  data_t *ino_data = NULL;
-  call_frame_t *fr = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	gf_fop_lookup_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int    ret = -1;
+	ino_t  ino = 0;
+	ino_t  par = 0;
+	size_t pathlen = 0;
+	size_t baselen = 0;
+	int32_t op_ret = -1;
+	int32_t op_errno = EINVAL;
+	client_private_t *priv = this->private;
 
-  if (inode && inode->ctx)
-    ino_data = dict_get (inode->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_lookup_cbk,
+			    priv->child,
+			    priv->child->fops->lookup,
+			    loc,
+			    need_xattr);
+		
+		return 0;
+	}
 
-  if (ino_data) {
-    dict_t *request = get_new_dict ();
-    ino = data_to_uint64 (ino_data);
+	GF_VALIDATE_OR_GOTO (this->name, loc, unwind);
+	GF_VALIDATE_OR_GOTO (this->name, loc->path, unwind);
 
-    fr = create_frame (this, this->ctx->pool);
+	if (loc->ino != 1) {
+		par = this_ino_get (loc->parent, this);
+		GF_VALIDATE_OR_GOTO (this->name, loc->name, unwind);
+		baselen = STRLEN_0(loc->name);
+	} else {
+		ino = 1;
+	}
 
-    dict_set (request, "INODE", data_from_uint64 (ino));
-    
-    ret = client_protocol_xfer (fr, this, GF_OP_TYPE_FOP_REQUEST,
-				GF_FOP_FORGET, request);
+	pathlen = STRLEN_0(loc->path);
 
-    dict_destroy (request);
-  }
+	hdrlen = gf_hdr_len (req, pathlen + baselen);
+	hdr    = gf_hdr_new (req, pathlen + baselen);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, unwind);
 
-  return ret;
+	req    = gf_param (hdr);
+
+	req->ino   = hton64 (ino);
+	req->par   = hton64 (par);
+	req->flags = hton32 (need_xattr);
+	strcpy (req->path, loc->path);
+	if (baselen)
+		strcpy (req->path + pathlen, loc->name);
+
+	frame->local = loc->inode;
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_LOOKUP,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+
+unwind:
+	STACK_UNWIND (frame, op_ret, op_errno, loc->inode, NULL, NULL);
+	return ret;
 }
+
 
 
 /*
@@ -2187,38 +3141,61 @@ client_forget (call_frame_t *frame,
  */
 int32_t
 client_fchmod (call_frame_t *frame,
-	       xlator_t *this,
-	       fd_t *fd,
-	       mode_t mode)
+               xlator_t *this,
+               fd_t *fd,
+               mode_t mode)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *fd_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_fchmod_req_t *req = NULL;
+	int64_t remote_fd = -1;
+	size_t hdrlen = -1;
+	int ret = -1;
+	int32_t op_errno = EINVAL;
+	int32_t op_ret   = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx) {
-    fd_data = dict_get (fd->ctx, this->name);
-  }
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_fchmod_cbk,
+			    priv->child,
+			    priv->child->fops->fchmod,
+			    fd,
+			    mode);
+		
+		return 0;
+	}
 
-  if (!fd_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (fd_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD);
-    return 0;
-  }
+	GF_VALIDATE_OR_GOTO (this->name, fd, unwind);
 
-  fd_str = strdup (data_to_str (fd_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "MODE", data_from_uint64 (mode));
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		op_errno = EBADFD;
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		goto unwind;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_FCHMOD, request);
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, unwind);
 
-  freee (fd_str);
-  dict_destroy (request);
-  return 0;
+	req    = gf_param (hdr);
+
+	req->fd   = hton64 (remote_fd);
+	req->mode = hton32 (mode);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FCHMOD,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return 0;
+
+unwind:
+	STACK_UNWIND (frame, op_ret, op_errno, NULL);
+	return 0;
 }
 
 
@@ -2234,40 +3211,426 @@ client_fchmod (call_frame_t *frame,
  */
 int32_t
 client_fchown (call_frame_t *frame,
-	       xlator_t *this,
-	       fd_t *fd,
-	       uid_t uid,
-	       gid_t gid)
+               xlator_t *this,
+               fd_t *fd,
+               uid_t uid,
+               gid_t gid)
 {
-  int32_t ret = -1;
-  char *fd_str = NULL;
-  dict_t *request = NULL;
-  data_t *fd_data = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	gf_fop_fchown_req_t *req = NULL;
+	int64_t remote_fd = 0;
+	size_t  hdrlen   = -1;
+	int32_t op_ret   = -1;
+	int32_t op_errno = EINVAL;
+	int32_t ret      = -1;
+	client_private_t *priv = this->private;
 
-  if (fd && fd->ctx)
-    fd_data = dict_get (fd->ctx, this->name);
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_fchown_cbk,
+			    priv->child,
+			    priv->child->fops->fchown,
+			    fd,
+			    uid,
+			    gid);
+		
+		return 0;
+	}
 
-  if (!fd_data) {
-    gf_log (this->name, GF_LOG_ERROR, ": returning EBADFD");
-    TRAP_ON (fd_data == NULL);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EBADFD);
-    return 0;
-  }
+	GF_VALIDATE_OR_GOTO (this->name, fd, unwind);
 
-  fd_str = strdup (data_to_str (fd_data));
-  request = get_new_dict ();
-  dict_set (request, "FD", str_to_data (fd_str));
-  dict_set (request, "UID", data_from_uint64 (uid));
-  dict_set (request, "GID", data_from_uint64 (gid));
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		op_errno = EBADFD;
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		goto unwind;
+	}
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_FCHOWN, request);
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, unwind);
 
-  freee (fd_str);
-  dict_destroy (request);
-  return 0;
+	req    = gf_param (hdr);
 
+	req->fd  = hton64 (remote_fd);
+	req->uid = hton32 (uid);
+	req->gid = hton32 (gid);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_FCHOWN,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return 0;
+
+unwind:
+	STACK_UNWIND (frame, op_ret, op_errno, NULL);
+	return 0;
+
+}
+
+/**
+ * client_setdents -
+ */
+int32_t
+client_setdents (call_frame_t *frame,
+                 xlator_t *this,
+                 fd_t *fd,
+                 int32_t flags,
+                 dir_entry_t *entries,
+                 int32_t count)
+{
+	gf_hdr_common_t       *hdr = NULL;
+	gf_fop_setdents_req_t *req = NULL;
+	int64_t remote_fd = 0;
+	char   *buffer = NULL;
+	char *ptr = NULL;
+	data_t *buf_data = NULL;
+	dict_t *reply_dict = NULL;
+	dir_entry_t *trav = NULL;
+	uint32_t len = 0;
+	int32_t  buf_len = 0;
+	int32_t  ret = -1;
+	int32_t  op_ret = -1;
+	int32_t  op_errno = EINVAL;
+	int32_t  vec_count = 0;
+	size_t   hdrlen = -1;
+	struct iovec vector[1];
+	client_private_t *priv = this->private;
+
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_setdents_cbk,
+			    priv->child,
+			    priv->child->fops->setdents,
+			    fd,
+			    flags,
+			    entries,
+			    count);
+		
+		return 0;
+	}
+
+	GF_VALIDATE_OR_GOTO (this->name, fd, unwind);
+
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p). "
+			"returning EBADFD", fd);
+		op_errno = EBADFD;
+		goto unwind;
+	}
+
+	GF_VALIDATE_OR_GOTO (this->name, entries, unwind);
+	GF_VALIDATE_OR_GOTO (this->name, count, unwind);
+
+	trav = entries->next;
+	while (trav) {
+		len += strlen (trav->name);
+		len += 1;
+		len += strlen (trav->link);
+		len += 1;
+		len += 256; // max possible for statbuf;
+		trav = trav->next;
+	}
+	buffer = CALLOC (1, len);
+	GF_VALIDATE_OR_GOTO (this->name, buffer, unwind);
+
+	ptr = buffer;
+
+	trav = entries->next;
+	while (trav) {
+		int32_t this_len = 0;
+		char *tmp_buf = NULL;
+		struct stat *stbuf = &trav->buf;
+		{
+			/* Convert the stat buf to string */
+			uint64_t dev = stbuf->st_dev;
+			uint64_t ino = stbuf->st_ino;
+			uint32_t mode = stbuf->st_mode;
+			uint32_t nlink = stbuf->st_nlink;
+			uint32_t uid = stbuf->st_uid;
+			uint32_t gid = stbuf->st_gid;
+			uint64_t rdev = stbuf->st_rdev;
+			uint64_t size = stbuf->st_size;
+			uint32_t blksize = stbuf->st_blksize;
+			uint64_t blocks = stbuf->st_blocks;
+
+			uint32_t atime = stbuf->st_atime;
+			uint32_t mtime = stbuf->st_mtime;
+			uint32_t ctime = stbuf->st_ctime;
+
+			uint32_t atime_nsec = ST_ATIM_NSEC(stbuf);
+			uint32_t mtime_nsec = ST_MTIM_NSEC(stbuf);
+			uint32_t ctime_nsec = ST_CTIM_NSEC(stbuf);
+
+			asprintf (&tmp_buf,
+				  GF_STAT_PRINT_FMT_STR,
+				  dev,
+				  ino,
+				  mode,
+				  nlink,
+				  uid,
+				  gid,
+				  rdev,
+				  size,
+				  blksize,
+				  blocks,
+				  atime,
+				  atime_nsec,
+				  mtime,
+				  mtime_nsec,
+				  ctime,
+				  ctime_nsec);
+		}
+		this_len = sprintf (ptr, "%s/%s%s\n",
+				    trav->name,
+				    tmp_buf,
+				    trav->link);
+
+		FREE (tmp_buf);
+		trav = trav->next;
+		ptr += this_len;
+	}
+	buf_len = strlen (buffer);
+
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->fd    = hton64 (remote_fd);
+	req->flags = hton32 (flags);
+	req->count = hton32 (count);
+
+	{
+		buf_data = get_new_data ();
+		GF_VALIDATE_OR_GOTO (this->name, buf_data, unwind);
+		reply_dict = get_new_dict();
+		GF_VALIDATE_OR_GOTO (this->name, reply_dict, unwind);
+
+		buf_data->data = buffer;
+		buf_data->len = buf_len;
+		dict_set (reply_dict, NULL, buf_data);
+		frame->root->rsp_refs = dict_ref (reply_dict);
+		vector[0].iov_base = buffer;
+		vector[0].iov_len = buf_len;
+		vec_count = 1;
+	}
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_SETDENTS,
+				    hdr, hdrlen, vector, vec_count, 
+				    frame->root->rsp_refs);
+
+	return ret;
+unwind:
+	STACK_UNWIND (frame, op_ret, op_errno);
+	return 0;
+}
+
+
+/*
+ * CBKs
+ */
+/*
+ * client_forget - forget function for client protocol
+ * @this:
+ * @inode:
+ *
+ * not for external reference
+ */
+int32_t
+client_forget (xlator_t *this,
+               inode_t *inode)
+{
+	ino_t            ino = 0;
+	client_private_t *priv = NULL;
+	client_forget_t  forget = {0,};
+	uint8_t          send_forget = 0;
+	int32_t          ret = -1;
+
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+	priv = this->private;
+
+	if (priv->child) {
+		/* */
+		/* Yenu beda */
+		return 0;
+	}
+
+	GF_VALIDATE_OR_GOTO (this->name, inode, out);
+	ino = this_ino_get (inode, this);
+
+	LOCK (&priv->forget.lock);
+	{
+		priv->forget.ino_array[priv->forget.count++] = ino;
+
+		if ((!priv->forget.frames_in_transit) || 
+		    (priv->forget.count >= CLIENT_PROTO_FORGET_LIMIT)) {
+			ret = client_get_forgets (this, &forget);
+			if (ret <= 0)
+				send_forget = 0;
+			else
+				send_forget = 1;
+		}
+	}
+	UNLOCK (&priv->forget.lock);
+	
+	if (send_forget) {
+		ret = protocol_client_xfer (forget.frame, this,
+					    GF_OP_TYPE_CBK_REQUEST, 
+					    GF_CBK_FORGET,
+					    forget.hdr, forget.hdrlen, 
+					    NULL, 0, NULL);
+	}
+out:
+	return 0;
+}
+
+/**
+ * client_releasedir - releasedir function for client protocol
+ * @this: this translator structure
+ * @fd: file descriptor structure
+ *
+ * external reference through client_protocol_xlator->cbks->releasedir
+ */
+
+int32_t
+client_releasedir (xlator_t *this,
+		   fd_t *fd)
+{
+	call_frame_t          *fr = NULL;
+	int32_t                ret = -1;
+	int64_t                remote_fd = 0;
+	char                   key[32] = {0,};
+	client_connection_private_t   *cprivate = NULL;
+	gf_hdr_common_t       *hdr = NULL;
+	size_t                 hdrlen = 0;
+	gf_cbk_releasedir_req_t *req  = NULL;
+	client_private_t        *priv = NULL;
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+
+	priv = this->private;
+	if (priv->child) {
+		/* */
+		/* yenu beda */
+		return 0;
+	}
+
+	GF_VALIDATE_OR_GOTO (this->name, fd, out);
+
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1){
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p).", fd);
+		goto out;
+	}
+
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, out);
+
+	req    = gf_param (hdr);
+
+	req->fd = hton64 (remote_fd);
+
+	{
+		cprivate = CLIENT_CONNECTION_PRIVATE(this);
+		sprintf (key, "%p", fd);
+
+		pthread_mutex_lock (&cprivate->lock);
+		{
+			dict_del (cprivate->saved_fds, key);
+		}
+		pthread_mutex_unlock (&cprivate->lock);
+	}
+
+	fr = create_frame (this, this->ctx->pool);
+	GF_VALIDATE_OR_GOTO (this->name, fr, out);
+
+	ret = protocol_client_xfer (fr, this,
+				    GF_OP_TYPE_CBK_REQUEST, GF_CBK_RELEASEDIR,
+				    hdr, hdrlen, NULL, 0, NULL);
+out:
+	return ret;
+}
+
+/**
+ * client_release - release function for client protocol
+ * @this: this translator structure
+ * @fd: file descriptor structure
+ *
+ * external reference through client_protocol_xlator->cbks->release
+ *
+ */
+int32_t
+client_release (xlator_t *this,
+		fd_t *fd)
+{
+	call_frame_t        *fr = NULL;
+	int32_t              ret = -1;
+	int64_t              remote_fd = 0;
+	char                 key[32] = {0,};
+	client_connection_private_t *cprivate = NULL;
+	gf_hdr_common_t     *hdr = NULL;
+	size_t               hdrlen = 0;
+	gf_cbk_release_req_t  *req = NULL;
+	client_private_t      *priv = NULL;
+
+	GF_VALIDATE_OR_GOTO ("client", this, out);
+	priv = this->private;
+
+	if (priv->child) {
+		/* */
+		/* yenu beda */
+		return 0;
+	}
+
+	GF_VALIDATE_OR_GOTO (this->name, fd, out);
+
+	ret = this_fd_get (fd, this, &remote_fd);
+	if (ret == -1) {
+		/* TODO: This log doesn't make sense */
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get remote fd from fd_t(%p).", fd);
+		goto out;
+	}
+
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, out);
+	req    = gf_param (hdr);
+
+	req->fd = hton64 (remote_fd);
+
+	{
+		cprivate = CLIENT_CONNECTION_PRIVATE(this);
+		sprintf (key, "%p", fd);
+
+		pthread_mutex_lock (&cprivate->lock);
+		{
+			dict_del (cprivate->saved_fds, key);
+		}
+		pthread_mutex_unlock (&cprivate->lock);
+	}
+
+	fr = create_frame (this, this->ctx->pool);
+	GF_VALIDATE_OR_GOTO (this->name, fr, out);
+
+	ret = protocol_client_xfer (fr, this,
+				    GF_OP_TYPE_CBK_REQUEST, GF_CBK_RELEASE,
+				    hdr, hdrlen, NULL, 0, NULL);
+out:
+	return ret;
 }
 
 /*
@@ -2283,143 +3646,173 @@ client_fchown (call_frame_t *frame,
  * external reference through client_protocol_xlator->mops->stats
  */
 
-int32_t 
+int32_t
 client_stats (call_frame_t *frame,
-	      xlator_t *this, 
-	      int32_t flags)
+              xlator_t *this,
+              int32_t flags)
 {
-  int32_t ret;
-  dict_t *request = get_new_dict ();
+	gf_hdr_common_t *hdr = NULL;
+	gf_mop_stats_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int ret = -1;
+	client_private_t *priv = NULL;
 
-  /* without this dummy key the server crashes */
-  dict_set (request, "FLAGS", data_from_int64 (0)); 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_MOP_REQUEST,
-			      GF_MOP_STATS, request);
+	GF_VALIDATE_OR_GOTO ("client", this, unwind);
 
-  dict_destroy (request);
+	priv = this->private;
+	if (priv->child) {
+		/* */
+		STACK_WIND (frame,
+			    default_stats_cbk,
+			    priv->child,
+			    priv->child->mops->stats,
+			    flags);
+		
+		return 0;
+	}
 
-  return ret;
+
+	hdrlen = gf_hdr_len (req, 0);
+	hdr    = gf_hdr_new (req, 0);
+	GF_VALIDATE_OR_GOTO (this->name, hdr, unwind);
+
+	req    = gf_param (hdr);
+
+	req->flags = hton32 (flags);
+
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_MOP_REQUEST, GF_MOP_STATS,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	STACK_UNWIND (frame, -1, EINVAL, NULL);
+	return 0;
 }
-
-
-/**
- * client_fsck - fsck (file system check) function for client protocol
- * @frame: call frame
- * @this: this translator structure
- * @flags: 
- *
- * external reference through client_protocol_xlator->mops->fsck
- */
-
-int32_t 
-client_fsck (call_frame_t *frame,
-	     xlator_t *this,
-	     int32_t flags)
-{
-  gf_log (this->name, GF_LOG_ERROR, "Function not implemented");
-  STACK_UNWIND (frame, -1, ENOSYS);
-  return 0;
-}
-
-
-/**
- * client_lock - lock function for client protocol
- * @frame: call frame
- * @this: this translator structure
- * @name: pathname of file to lock
- *
- * external reference through client_protocol_xlator->fops->lock
- */
-
-int32_t 
-client_lock (call_frame_t *frame,
-	     xlator_t *this,
-	     const char *name)
-{
-  dict_t *request = get_new_dict ();
-  int32_t ret = -1;
-
-  dict_set (request, "PATH", str_to_data ((char *)name));
-
-  ret = client_protocol_xfer (frame,
-			      this,
-			      GF_OP_TYPE_MOP_REQUEST,
-			      GF_MOP_LOCK,
-			      request);
-
-  dict_destroy (request);
-
-  return ret;
-}
-
-
-/**
- * client_unlock - management function of client protocol to unlock
- * @frame: call frame
- * @this: this translator structure
- * @name: pathname of the file whose lock has to be released
- *
- * external reference through client_protocol_xlator->mops->unlock
- */
-
-int32_t 
-client_unlock (call_frame_t *frame,
-	       xlator_t *this,
-	       const char *name)
-{
-  dict_t *request = get_new_dict ();
-  int32_t ret = -1;
-
-  dict_set (request, "PATH", str_to_data ((char *)name));
-
-  ret = client_protocol_xfer (frame,
-			      this,
-			      GF_OP_TYPE_MOP_REQUEST,
-			      GF_MOP_UNLOCK, request);
-
-  dict_destroy (request);
-
-  return ret;
-}
-
-
-/**
- * client_listlocks - management function of client protocol to list locks
- * @frame: call frame
- * @this: this translator structure
- * @pattern: 
- *
- * external reference through client_protocol_xlator->mops->listlocks
- */
-
-int32_t 
-client_listlocks (call_frame_t *frame,
-		  xlator_t *this,
-		  const char *pattern)
-{
-  dict_t *request = get_new_dict ();
-  int32_t ret = -1;
-
-  dict_set (request, "OP", data_from_uint64 (0xcafebabe));
-  ret = client_protocol_xfer (frame,
-			      this,
-			      GF_OP_TYPE_MOP_REQUEST,
-			      GF_MOP_LISTLOCKS,
-			      request);
-
-  dict_destroy (request);
-
-  return ret;
-}
-
 
 
 /* Callbacks */
-#define CLIENT_PRIVATE(frame) (((transport_t *)(frame->this->private))->xl_private)
+
+int32_t
+client_fxattrop_cbk (call_frame_t *frame,
+		     gf_hdr_common_t *hdr, size_t hdrlen,
+		     char *buf, size_t buflen)
+{
+	gf_fop_xattrop_rsp_t *rsp = NULL;
+	int32_t op_ret   = 0;
+	int32_t gf_errno = 0;
+	int32_t op_errno = 0;
+	int32_t dict_len = 0;
+	dict_t *dict = NULL;
+	int32_t ret = -1;
+	char *dictbuf = NULL;
+
+	rsp = gf_param (hdr);
+	GF_VALIDATE_OR_GOTO(frame->this->name, rsp, fail);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+
+	if (op_ret >= 0) {
+		op_ret = -1;
+		dict_len = ntoh32 (rsp->dict_len);
+
+		if (dict_len > 0) {
+			dictbuf = memdup (rsp->dict, dict_len);
+			GF_VALIDATE_OR_GOTO(frame->this->name, dictbuf, fail);
+
+			dict = dict_new();
+			GF_VALIDATE_OR_GOTO(frame->this->name, dict, fail);
+
+			ret = dict_unserialize (dictbuf, dict_len, &dict);
+			if (ret < 0) {
+				gf_log (frame->this->name, GF_LOG_ERROR,
+					"failed to serialize dictionary(%p)",
+					dict);
+				op_errno = -ret;
+				goto fail;
+			} else {
+				dict->extra_free = dictbuf;
+				dictbuf = NULL;
+			}
+		}
+		op_ret = 0;
+	}
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+
+fail:
+	STACK_UNWIND (frame, op_ret, op_errno, dict);
+	
+	if (dictbuf)
+		free (dictbuf);
+
+	if (dict)
+		dict_unref (dict);
+
+	return 0;
+}
+
+int32_t
+client_xattrop_cbk (call_frame_t *frame,
+		    gf_hdr_common_t *hdr, size_t hdrlen,
+		    char *buf, size_t buflen)
+{
+	gf_fop_xattrop_rsp_t *rsp = NULL;
+	int32_t op_ret   = -1;
+	int32_t gf_errno = EINVAL;
+	int32_t op_errno = 0;
+	int32_t dict_len = 0;
+	dict_t *dict = NULL;
+	int32_t ret = -1;
+	char *dictbuf = NULL;
+
+	rsp = gf_param (hdr);
+	GF_VALIDATE_OR_GOTO(frame->this->name, rsp, fail);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	if (op_ret >= 0) {
+		op_ret = -1;
+		dict_len = ntoh32 (rsp->dict_len);
+
+		if (dict_len > 0) {
+			dictbuf = memdup (rsp->dict, dict_len);
+			GF_VALIDATE_OR_GOTO(frame->this->name, dictbuf, fail);
+
+			dict = get_new_dict();
+			GF_VALIDATE_OR_GOTO(frame->this->name, dict, fail);
+			dict_ref (dict);
+                                               
+			ret = dict_unserialize (dictbuf, dict_len, &dict);
+			if (ret < 0) {
+				gf_log (frame->this->name, GF_LOG_ERROR,
+					"failed to serialize dictionary(%p)",
+					dict);
+				goto fail;
+			} else {
+				dict->extra_free = dictbuf;
+				dictbuf = NULL;
+			}
+		}
+		op_ret = 0;
+	}
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+
+
+fail:
+	STACK_UNWIND (frame, op_ret, op_errno, dict);
+	
+	if (dictbuf)
+		free (dictbuf);
+	if (dict)
+		dict_unref (dict);
+
+	return 0;
+}
 
 /*
- * client_chown_cbk - 
- * 
+ * client_chown_cbk -
+ *
  * @frame:
  * @args:
  *
@@ -2427,51 +3820,31 @@ client_listlocks (call_frame_t *frame,
  */
 int32_t
 client_fchown_cbk (call_frame_t *frame,
-		   dict_t *args)
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  data_t *ret_data = NULL, *errno_data = NULL, *stat_data = NULL;
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *stat_str = NULL;
-  struct stat *stbuf = NULL;
+	struct stat stbuf = {0, };
+	gf_fop_fchown_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  ret_data = dict_get (args, "RET");
-  errno_data = dict_get (args, "ERRNO");
-  stat_data = dict_get (args, "STAT");
-  
-  if (!ret_data || !errno_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, op_ret, op_errno, stbuf);
-    return -1;
-  }
-  
-  op_ret = data_to_uint64 (ret_data);
-  op_errno = data_to_uint64 (errno_data);
+	rsp = gf_param (hdr);
 
-  if (op_ret >= 0) {
-    if (stat_data) {
-      stat_str = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_str);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  if (stbuf)
-    free (stbuf);
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
 
-  return 0;
+	return 0;
 }
 
 
 /*
- * client_fchmod_cbk 
+ * client_fchmod_cbk
  *
  * @frame:
  * @args:
@@ -2480,46 +3853,26 @@ client_fchown_cbk (call_frame_t *frame,
  */
 int32_t
 client_fchmod_cbk (call_frame_t *frame,
-		   dict_t *args)
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  data_t *ret_data = NULL, *errno_data = NULL, *stat_data = NULL;
-  char *stat_str = NULL;
-  struct stat *stbuf = NULL;
+	struct stat stbuf = {0, };
+	gf_fop_fchmod_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  ret_data = dict_get (args, "RET");
-  errno_data = dict_get (args, "ERRNO");
-  stat_data = dict_get (args, "STAT");
-  
-  if (!ret_data || !errno_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, op_ret, op_errno, stbuf);
-    return -1;
-  }
-  
-  op_ret = data_to_uint64 (ret_data);
-  op_errno = data_to_uint64 (errno_data);
+	rsp = gf_param (hdr);
 
-  if (op_ret >= 0) {
-    if (stat_data) {
-      stat_str = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_str);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  if (stbuf)
-    free (stbuf);
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
 
-  return 0;
+	return 0;
 }
 
 
@@ -2528,79 +3881,66 @@ client_fchmod_cbk (call_frame_t *frame,
  * @frame: call frame
  * @args: arguments in dictionary
  *
- * not for external reference 
+ * not for external reference
  */
 
-int32_t 
+int32_t
 client_create_cbk (call_frame_t *frame,
-		   dict_t *args)
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  int32_t op_ret = 0;
-  int32_t op_errno = ENOTCONN;
-  char *stat_buf = NULL;
-  struct stat *stbuf = NULL;
-  client_proto_priv_t *priv = NULL;
-  inode_t *inode = NULL;
-  fd_t *fd = NULL;
-  data_t *stat_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *fd_data = dict_get (args, "FD");
-  client_local_t *local = frame->local;
+	gf_fop_create_rsp_t *rsp = NULL;
+	int32_t              op_ret = 0;
+	int32_t              op_errno = 0;
+	fd_t                *fd = NULL;
+	inode_t             *inode = NULL;
+	struct stat          stbuf = {0, };
+	int64_t              remote_fd = 0;
+	client_connection_private_t *cprivate = NULL;
+	char                 key[32] = {0, };
+	int32_t              ret = -1;
 
-  fd = local->fd;
-  inode = local->inode;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, fd, inode, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
+	fd = frame->local;
+	frame->local = NULL;
+	inode = fd->inode;
 
-  if (op_ret >= 0) {
-    /* handle fd */
-    if (fd_data && stat_data) {
-      char *remote_fd = strdup (data_to_str (fd_data));
-      char *key = NULL;
+	rsp = gf_param (hdr);
 
-      stat_buf = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_buf);
+	op_ret    = ntoh32 (hdr->rsp.op_ret);
+	op_errno  = ntoh32 (hdr->rsp.op_errno);
 
-      /* add newly created file's inode to  inode table */
-      dict_set (inode->ctx, (frame->this)->name, 
-		data_from_uint64 (stbuf->st_ino));
+	if (op_ret >= 0) {
+		remote_fd = ntoh64 (rsp->fd);
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-      dict_set (fd->ctx, (frame->this)->name,  data_from_dynstr (remote_fd));
+	if (op_ret >= 0) {
+		cprivate = CLIENT_CONNECTION_PRIVATE(frame->this);
 
-      asprintf (&key, "%p", fd);
-      
-      priv = CLIENT_PRIVATE (frame);
-      pthread_mutex_lock (&priv->lock);
-      {
-	dict_set (priv->saved_fds, key, str_to_data ("")); 
-      }
-      pthread_mutex_unlock (&priv->lock);
-      
-      free (key);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+		this_ino_set (inode, frame->this, stbuf.st_ino);
+		this_fd_set (fd, frame->this, remote_fd);
 
-  STACK_UNWIND (frame, op_ret, op_errno, fd, inode, stbuf);
-  
-  if (stbuf)
-    free (stbuf);
+		sprintf (key, "%p", fd);
 
-  return 0;
+		pthread_mutex_lock (&cprivate->lock);
+		{
+			ret = dict_set_str (cprivate->saved_fds, key, "");
+		}
+		pthread_mutex_unlock (&cprivate->lock);
+
+		if (ret < 0) {
+			free (key);
+			/* TODO: This log doesn't make sense */
+			gf_log (frame->this->name, GF_LOG_ERROR,
+				"failed to save fd(%p)", fd);
+		}
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, fd, inode, &stbuf);
+
+	return 0;
 }
+
 
 /*
  * client_open_cbk - open callback for client protocol
@@ -2609,158 +3949,119 @@ client_create_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_open_cbk (call_frame_t *frame,
-		 dict_t *args)
+                 gf_hdr_common_t *hdr, size_t hdrlen,
+                 char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *fd_data = dict_get (args, "FD");
-  client_proto_priv_t *priv = NULL;
-  int32_t op_ret = -1;
-  int32_t op_errno = 0;
-  client_local_t *local = frame->local;
-  fd_t *fd = local->fd; 
+	int32_t              op_ret = -1;
+	int32_t              op_errno = ENOTCONN;
+	fd_t                *fd = NULL;
+	int64_t              remote_fd = 0;
+	gf_fop_open_rsp_t   *rsp = NULL;
+	client_connection_private_t *cprivate = NULL;
+	char                 key[32] = {0,};
+	int32_t              ret = -1;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, fd);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-  
-  fd = local->fd;
+	fd = frame->local;
+	frame->local = NULL;
 
-  if (op_ret >= 0) {
-    if (fd_data) {
-      /* handle fd */
-      char *remote_fd = strdup (data_to_str (fd_data));
-      char *key = NULL;
-      
-      dict_set (fd->ctx, (frame->this)->name, data_from_dynstr (remote_fd));
-      
-      asprintf (&key, "%p", fd);
-      
-      priv = CLIENT_PRIVATE (frame);
-      pthread_mutex_lock (&priv->lock);
-      {
-	dict_set (priv->saved_fds, key, str_to_data (""));
-      }
-      pthread_mutex_unlock (&priv->lock);
-      
-      freee (key);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, fd);
-  return 0;
+	op_ret    = ntoh32 (hdr->rsp.op_ret);
+	op_errno  = ntoh32 (hdr->rsp.op_errno);
+
+	if (op_ret >= 0) {
+		remote_fd = ntoh64 (rsp->fd);
+	}
+
+	if (op_ret >= 0) {
+		cprivate = CLIENT_CONNECTION_PRIVATE(frame->this);
+
+		this_fd_set (fd, frame->this, remote_fd);
+
+		sprintf (key, "%p", fd);
+
+		pthread_mutex_lock (&cprivate->lock);
+		{
+			ret = dict_set_str (cprivate->saved_fds, key, "");
+		}
+		pthread_mutex_unlock (&cprivate->lock);
+
+		if (ret < 0) {
+			gf_log (frame->this->name, GF_LOG_ERROR,
+				"failed to save fd(%p)", fd);
+			free (key);
+		}
+
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, fd);
+
+	return 0;
 }
 
-/* 
+/*
  * client_stat_cbk - stat callback for client protocol
  * @frame: call frame
  * @args: arguments dictionary
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_stat_cbk (call_frame_t *frame,
-		 dict_t *args)
+                 gf_hdr_common_t *hdr, size_t hdrlen,
+                 char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = 0; 
-  char *buf = NULL; 
-  struct stat *stbuf = NULL;
-    
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	struct stat stbuf = {0, };
+	gf_fop_stat_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  if (op_ret >= 0) {
-    if (buf_data) {
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  if (stbuf)
-    freee (stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  return 0;
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
 }
 
-/* 
+/*
  * client_utimens_cbk - utimens callback for client protocol
  * @frame: call frame
  * @args: argument dictionary
  *
  * not for external reference
  */
- 
-int32_t 
+
+int32_t
 client_utimens_cbk (call_frame_t *frame,
-		    dict_t *args)
+                    gf_hdr_common_t *hdr, size_t hdrlen,
+                    char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = 0;
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  if (op_ret >= 0) {
-    if (buf_data) {
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	struct stat stbuf = {0, };
+	gf_fop_utimens_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
-  
-  if (stbuf) 
-    free (stbuf);
+	rsp = gf_param (hdr);
 
-  return 0;
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
 }
 
 /*
@@ -2770,46 +4071,28 @@ client_utimens_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_chmod_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = ENOTCONN; 
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
+	struct stat stbuf = {0, };
+	gf_fop_chmod_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	rsp = gf_param (hdr);
 
-  if (op_ret >= 0) {
-    if (buf_data) {
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  if (stbuf)
-    free (stbuf);
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
 
-  return 0;
+	return 0;
 }
 
 /*
@@ -2817,103 +4100,66 @@ client_chmod_cbk (call_frame_t *frame,
  * @frame: call frame
  * @args: argument dictionary
  *
- * not for external reference 
+ * not for external reference
  */
-int32_t 
+int32_t
 client_chown_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = ENOTCONN; 
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
+	struct stat stbuf = {0, };
+	gf_fop_chown_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	rsp = gf_param (hdr);
 
-  if (op_ret >= 0) {
-    if (buf_data) {
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
-  
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  if (stbuf)
-    free (stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  return 0;
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
 }
 
-/* 
+/*
  * client_mknod_cbk - mknod callback for client protocol
  * @frame: call frame
  * @args: argument dictionary
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_mknod_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  client_local_t *local = frame->local;
-  inode_t *inode = local->inode;
+	gf_fop_mknod_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	struct stat stbuf = {0, };
+	inode_t *inode = NULL;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, inode, stbuf);
-    return 0;
-  }
+	inode = frame->local;
+	frame->local = NULL;
 
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  inode = local->inode;
-  
-  if (op_ret >= 0){
-    if (buf_data) {
-      /* handle inode */
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-      dict_set (inode->ctx, (frame->this)->name, 
-		data_from_uint64 (stbuf->st_ino));
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
-  
-  STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf);
-  
-  if (stbuf)
-    freee (stbuf);
+	rsp = gf_param (hdr);
 
-  return 0;
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret >= 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+		this_ino_set (inode, frame->this, stbuf.st_ino);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, inode, &stbuf);
+
+	return 0;
 }
 
 /*
@@ -2923,52 +4169,33 @@ client_mknod_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_symlink_cbk (call_frame_t *frame,
-		    dict_t *args)
+                    gf_hdr_common_t *hdr, size_t hdrlen,
+                    char *buf, size_t buflen)
 {
-  data_t *stat_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *stat_str = NULL;
-  struct stat *stbuf = NULL;
-  client_local_t *local = frame->local;
-  inode_t *inode = local->inode;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, inode, stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  inode = local->inode;
+	gf_fop_symlink_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	struct stat stbuf = {0, };
+	inode_t *inode = NULL;
 
-  if (op_ret >= 0){
-    if (stat_data) {
-      /* handle inode */
-      stat_str = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_str);
-      dict_set (inode->ctx, (frame->this)->name, 
-		data_from_uint64 (stbuf->st_ino));
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
-  
-  STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf);
-  
-  if (stbuf)
-    freee (stbuf);
+	inode = frame->local;
+	frame->local = NULL;
 
-  return 0;
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret >= 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+		this_ino_set (inode, frame->this, stbuf.st_ino);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, inode, &stbuf);
+
+	return 0;
 }
 
 /*
@@ -2976,102 +4203,66 @@ client_symlink_cbk (call_frame_t *frame,
  * @frame: call frame
  * @args: argument dictionary
  *
- * not for external reference 
+ * not for external reference
  */
-int32_t 
+int32_t
 client_link_cbk (call_frame_t *frame,
-		 dict_t *args)
+                 gf_hdr_common_t *hdr, size_t hdrlen,
+                 char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  client_local_t *local = frame->local;
-  inode_t *inode = local->inode;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, inode, stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-  inode = local->inode;
-    
-  if (op_ret >= 0){
-    if (buf_data) {
-      /* handle inode */
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
-  
-  STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf);
+	gf_fop_link_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	struct stat stbuf = {0, };
+	inode_t *inode = NULL;
 
-  if (stbuf)
-    freee (stbuf);
+	inode = frame->local;
+	frame->local = NULL;
 
-  return 0;
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret >= 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, inode, &stbuf);
+
+	return 0;
 }
 
-/* 
+/*
  * client_truncate_cbk - truncate callback for client protocol
  * @frame: call frame
  * @args: argument dictionary
  *
- * not for external reference 
+ * not for external reference
  */
 
-int32_t 
+int32_t
 client_truncate_cbk (call_frame_t *frame,
-		     dict_t *args)
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	struct stat stbuf = {0, };
+	gf_fop_truncate_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  if (op_ret >= 0) {
-    if (buf_data) {
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  if (stbuf)
-    free (stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  return 0;
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
 }
 
 /* client_fstat_cbk - fstat callback for client protocol
@@ -3081,95 +4272,59 @@ client_truncate_cbk (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_fstat_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *stat_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = ENOTCONN;
-  char *stat_buf = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	struct stat stbuf = {0, };
+	gf_fop_fstat_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  if (op_ret >= 0) {
-    if (stat_data) {
-      stat_buf = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  if (stbuf)
-    freee (stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  return 0;
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
 }
 
-/* 
+/*
  * client_ftruncate_cbk - ftruncate callback for client protocol
  * @frame: call frame
  * @args: argument dictionary
  *
  * not for external reference
- */ 
-int32_t 
+ */
+int32_t
 client_ftruncate_cbk (call_frame_t *frame,
-		      dict_t *args)
+                      gf_hdr_common_t *hdr, size_t hdrlen,
+                      char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "STAT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1; 
-  int32_t op_errno = ENOTCONN; 
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, stbuf);
-    return 0;
-  }
+	struct stat stbuf = {0, };
+	gf_fop_ftruncate_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	rsp = gf_param (hdr);
 
-  if (op_ret >= 0) {
-    if (buf_data) {
-      buf = data_to_str (buf_data);
-      stbuf = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  if (stbuf)
-    freee (stbuf);
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
 
-  return 0;
+	return 0;
 }
 
 /* client_readv_cbk - readv callback for client protocol
@@ -3179,56 +4334,42 @@ client_ftruncate_cbk (call_frame_t *frame,
  * not for external referece
  */
 
-int32_t 
+int32_t
 client_readv_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "BUF");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *stat_data = dict_get (args, "STAT");
-  char *stat_str = NULL;
-  struct stat *stbuf = NULL;
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct iovec vec = {0,};
-  
-  if (!buf_data || !ret_data || !err_data) {
-    struct stat stbuf = {0,};
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL, 1, &stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	gf_fop_read_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	struct iovec vector = {0, };
+	struct stat stbuf = {0, };
+	dict_t *refs = NULL;
 
-  if (op_ret >= 0) {
-    if (buf_data && stat_data) {
-      buf = data_to_bin (buf_data);
-      stat_str = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_str);
-      vec.iov_base = buf;
-      vec.iov_len = op_ret;
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, &vec, 1, stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  if (stbuf)
-    freee (stbuf);
+	if (op_ret != -1) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+		vector.iov_base = buf;
+		vector.iov_len  = buflen;
 
-  return 0;
+		refs = get_new_dict ();
+		dict_set (refs, NULL, data_from_dynptr (buf, 0));
+		frame->root->rsp_refs = dict_ref (refs);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, &vector, 1, &stbuf);
+
+	if (refs)
+		dict_unref (refs);
+
+	return 0;
 }
 
-/* 
+/*
  * client_write_cbk - write callback for client protocol
  * @frame: cal frame
  * @args: argument dictionary
@@ -3236,234 +4377,57 @@ client_readv_cbk (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_write_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *stat_data = dict_get (args, "STAT");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *stat_str = NULL;
-  struct stat *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    struct stat stbuf = {0,};
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, &stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
- 
- if (op_ret >= 0) {
-   if (stat_data) {
-     stat_str = data_to_str (stat_data);
-     stbuf = str_to_stat (stat_str);
-   } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-   }
-  }
+	gf_fop_write_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	struct stat stbuf = {0, };
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	rsp = gf_param (hdr);
 
-  if (stbuf)
-    freee (stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  return 0;
-}
+	if (op_ret >= 0)
+		gf_stat_to_stat (&rsp->stat, &stbuf);
 
-/*
- * client_getdents_cbk - readdir callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-int32_t 
-client_getdents_cbk (call_frame_t *frame,
-		    dict_t *args)
-{
-  data_t *buf_data = dict_get (args, "DENTRIES");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *cnt_data = dict_get (args, "NR_ENTRIES");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  int32_t nr_count = 0;
-  char *buf = NULL;
-  
-  dir_entry_t *entry = NULL;
-  dir_entry_t *trav = NULL, *prev = NULL;
-  int32_t count, i, bread;
-  char *ender = NULL, *buffer_ptr = NULL;
-  char tmp_buf[512] = {0,};
-  
-  if (!buf_data || !ret_data || !err_data || !cnt_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL, 0);
-    return 0;
-  }
-  
-  op_ret   = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  nr_count = data_to_int32 (cnt_data);
-  buf      = data_to_str (buf_data);
-  
-  entry = calloc (1, sizeof (dir_entry_t));
-  prev = entry;
-  buffer_ptr = buf;
-  
-  for (i = 0; i < nr_count ; i++) {
-    bread = 0;
-    trav = calloc (1, sizeof (dir_entry_t));
-    ender = strchr (buffer_ptr, '/');
-    count = ender - buffer_ptr;
-    trav->name = calloc (1, count + 2);
-    strncpy (trav->name, buffer_ptr, count);
-    bread = count + 1;
-    buffer_ptr += bread;
-    
-    ender = strchr (buffer_ptr, '\n');
-    count = ender - buffer_ptr;
-    strncpy (tmp_buf, buffer_ptr, count);
-    bread = count + 1;
-    buffer_ptr += bread;
-    
-    {
-      uint64_t dev;
-      uint64_t ino;
-      uint32_t mode;
-      uint32_t nlink;
-      uint32_t uid;
-      uint32_t gid;
-      uint64_t rdev;
-      uint64_t size;
-      uint32_t blksize;
-      uint64_t blocks;
-      uint32_t atime;
-      uint32_t atime_nsec;
-      uint32_t mtime;
-      uint32_t mtime_nsec;
-      uint32_t ctime;
-      uint32_t ctime_nsec;
-      
-      sscanf (tmp_buf, GF_STAT_PRINT_FMT_STR,
-	      &dev,
-	      &ino,
-	      &mode,
-	      &nlink,
-	      &uid,
-	      &gid,
-	      &rdev,
-	      &size,
-	      &blksize,
-	      &blocks,
-	      &atime,
-	      &atime_nsec,
-	      &mtime,
-	      &mtime_nsec,
-	      &ctime,
-	      &ctime_nsec);
-      
-      trav->buf.st_dev = dev;
-      trav->buf.st_ino = ino;
-      trav->buf.st_mode = mode;
-      trav->buf.st_nlink = nlink;
-      trav->buf.st_uid = uid;
-      trav->buf.st_gid = gid;
-      trav->buf.st_rdev = rdev;
-      trav->buf.st_size = size;
-      trav->buf.st_blksize = blksize;
-      trav->buf.st_blocks = blocks;
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
 
-      trav->buf.st_atime = atime;
-      trav->buf.st_mtime = mtime;
-      trav->buf.st_ctime = ctime;
-
-#ifdef HAVE_TV_NSEC
-      trav->buf.st_atim.tv_nsec = atime_nsec;
-      trav->buf.st_mtim.tv_nsec = mtime_nsec;
-      trav->buf.st_ctim.tv_nsec = ctime_nsec;
-#endif
-
-    }
-
-    ender = strchr (buffer_ptr, '\n');
-    count = ender - buffer_ptr;
-    *ender = '\0';
-    if (S_ISLNK (trav->buf.st_mode)) {
-      trav->link = strdup (buffer_ptr);
-    } else
-      trav->link = "";
-
-    bread = count + 1;
-    buffer_ptr += bread;
-
-    prev->next = trav;
-    prev = trav;
-  }
-  
-  STACK_UNWIND (frame, op_ret, op_errno, entry, nr_count);
-
-  prev = entry;
-  trav = entry->next;
-  while (trav) {
-    prev->next = trav->next;
-    free (trav->name);
-    if (S_ISLNK (trav->buf.st_mode))
-      free (trav->link);
-    free (trav);
-    trav = prev->next;
-  }
-  free (entry);
-
-  return 0;
+	return 0;
 }
 
 
-int32_t 
+int32_t
 client_readdir_cbk (call_frame_t *frame,
-		    dict_t *args)
+                    gf_hdr_common_t *hdr, size_t hdrlen,
+                    char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *buf_data = dict_get (args, "BUF");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  
-  if (!ret_data || !err_data) {
-    struct stat stbuf = {0,};
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, &stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
- 
-  if (op_ret >= 0) {
-    if (!buf_data) {
-      gf_log (frame->this->name, GF_LOG_ERROR,
-	      "missing keys in reply dict, returning EINVAL");
-      STACK_UNWIND (frame, -1, EINVAL, NULL);
-      return 0;
-    }
-    buf = data_to_str (buf_data);
-  }
+	gf_fop_readdir_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	uint32_t buf_size = 0;
+	gf_dirent_t entries;
 
-  STACK_UNWIND (frame, op_ret, op_errno, buf);
+	rsp = gf_param (hdr);
 
-  return 0;
+	op_ret    = ntoh32 (hdr->rsp.op_ret);
+	op_errno  = ntoh32 (hdr->rsp.op_errno);
+
+	INIT_LIST_HEAD (&entries.list);
+	if (op_ret > 0) {
+		buf_size = ntoh32 (rsp->size);
+		gf_dirent_unserialize (&entries, rsp->buf, buf_size);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, &entries);
+
+	gf_dirent_free (&entries);
+
+	return 0;
 }
 
 /*
@@ -3474,72 +4438,70 @@ client_readdir_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_fsync_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	struct stat stbuf = {0, };
+	gf_fop_fsync_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
+
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
 }
 
-/* 
+
+/*
  * client_unlink_cbk - unlink callback for client protocol
  * @frame: call frame
  * @args: argument dictionary
  *
  * not for external reference
  */
-int32_t 
-client_unlink_cbk (call_frame_t *frame,
-		   dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
-}
-
 int32_t
-client_rmelem_cbk (call_frame_t *frame,
-		   dict_t *args)
+client_unlink_cbk (call_frame_t *frame,
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  int32_t op_ret, op_errno;
+	gf_fop_unlink_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
 
-  op_ret = data_to_int32 (dict_get (args, "RET"));
-  op_errno = data_to_int32 (dict_get (args, "ERRNO"));
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
 
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
 }
-
 
 /*
  * client_rename_cbk - rename callback for client protocol
@@ -3548,47 +4510,30 @@ client_rmelem_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_rename_cbk (call_frame_t *frame,
-		   dict_t *args)
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *stat_data = dict_get (args, "STAT");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct stat *stbuf = NULL;
+	struct stat stbuf = {0, };
+	gf_fop_rename_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret   = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	rsp = gf_param (hdr);
 
-  if (op_ret >= 0) {
-    if (stat_data) {
-      buf      = data_to_str (stat_data);
-      stbuf    = str_to_stat (buf);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	if (op_ret == 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+	}
 
-  if (stbuf)
-    free (stbuf);
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
 
-  return 0;
+	return 0;
 }
+
 
 /*
  * client_readlink_cbk - readlink callback for client protocol
@@ -3598,30 +4543,27 @@ client_rename_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_readlink_cbk (call_frame_t *frame,
-		    dict_t *args)
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "LINK");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  
-  if (!buf_data || !ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret   = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  buf      = data_to_str (buf_data);
-  
-  STACK_UNWIND (frame, op_ret, op_errno, buf);
-  return 0;
+	gf_fop_readlink_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	char *link = NULL;
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret > 0) {
+		link = rsp->path;
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, link);
+	return 0;
 }
 
 /*
@@ -3631,52 +4573,33 @@ client_readlink_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_mkdir_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *buf_data = dict_get (args, "STAT");
-  char *stat_str = NULL;
-  struct stat *stbuf = NULL;
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  client_local_t *local = frame->local;
-  inode_t *inode = local->inode;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, inode, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-  inode = local->inode;
+	gf_fop_mkdir_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	struct stat stbuf = {0, };
+	inode_t *inode = NULL;
 
-  if (op_ret >= 0) {
-    if (buf_data) {
-      stat_str = data_to_str (buf_data);
-      stbuf = str_to_stat (stat_str);
-      
-      dict_set (inode->ctx, (frame->this)->name, 
-		data_from_uint64 (stbuf->st_ino));
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	inode = frame->local;
+	frame->local = NULL;
 
-  STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf);
+	rsp = gf_param (hdr);
 
-  if (stbuf)
-    freee (stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  return 0;
+	if (op_ret >= 0) {
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+		this_ino_set (inode, frame->this, stbuf.st_ino);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, inode, &stbuf);
+
+	return 0;
 }
 
 /*
@@ -3688,59 +4611,22 @@ client_mkdir_cbk (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_flush_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
 }
 
-/*
- * client_close_cbk - close callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-int32_t 
-client_close_cbk (call_frame_t *frame,
-		  dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  
-  return 0;
-}
 
 /*
  * client_opendir_cbk - opendir callback for client protocol
@@ -3749,92 +4635,58 @@ client_close_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
-client_opendir_cbk (call_frame_t *frame,
-		    dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *fd_data = dict_get (args, "FD");
-  client_proto_priv_t *priv = NULL;
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  client_local_t *local = frame->local;
-  fd_t *fd = local->fd;
-
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, fd);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-
-
-  if (op_ret >= 0) {
-
-    if (fd_data) {
-      /* handle fd */
-      char *key = NULL;
-      char *remote_fd_str = strdup (data_to_str (fd_data));
-      
-      dict_set (fd->ctx, (frame->this)->name,
-		data_from_dynstr (remote_fd_str));
-    
-      asprintf (&key, "%p", fd);
-
-      priv = CLIENT_PRIVATE(frame);
-      pthread_mutex_lock (&priv->lock);
-      {
-	dict_set (priv->saved_fds, key, str_to_data (""));
-      }
-      pthread_mutex_unlock (&priv->lock);
-      
-      free (key);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
-
-  STACK_UNWIND (frame, op_ret, op_errno, fd);
-
-  return 0;
-}
-
-/*
- * client_closedir_cbk - closedir callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
 int32_t
-client_closedir_cbk (call_frame_t *frame,
-		     dict_t *args)
+client_opendir_cbk (call_frame_t *frame,
+                    gf_hdr_common_t *hdr, size_t hdrlen,
+                    char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	int32_t               op_ret   = -1;
+	int32_t               op_errno = ENOTCONN;
+	fd_t                 *fd       = NULL;
+	int64_t               remote_fd = 0;
+	gf_fop_opendir_rsp_t *rsp  = NULL;
+	client_connection_private_t  *cprivate = NULL;
+	char                  key[32] = {0,};
+	int32_t               ret     = -1;
+
+	fd = frame->local;
+	frame->local = NULL;
+
+	rsp = gf_param (hdr);
+
+	op_ret    = ntoh32 (hdr->rsp.op_ret);
+	op_errno  = ntoh32 (hdr->rsp.op_errno);
+
+	if (op_ret >= 0) {
+		remote_fd = ntoh64 (rsp->fd);
+	}
+
+	if (op_ret >= 0) {
+		cprivate = CLIENT_CONNECTION_PRIVATE(frame->this);
+
+		this_fd_set (fd, frame->this, remote_fd);
+
+		sprintf (key, "%p", fd);
+
+		pthread_mutex_lock (&cprivate->lock);
+		{
+			ret = dict_set_str (cprivate->saved_fds, key, "");
+		}
+		pthread_mutex_unlock (&cprivate->lock);
+
+		if (ret < 0) {
+			free (key);
+			/* TODO: This log doesn't make sense */
+			gf_log (frame->this->name, GF_LOG_ERROR,
+				"failed to save fd(%p)", fd);
+		}
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, fd);
+
+	return 0;
 }
+
 
 /*
  * client_rmdir_cbk - rmdir callback for client protocol
@@ -3844,145 +4696,23 @@ client_closedir_cbk (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_rmdir_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
-}
+	gf_fop_rmdir_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-/*
- * client_statfs_cbk - statfs callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-int32_t 
-client_statfs_cbk (call_frame_t *frame,
-		   dict_t *args)
-{
-  data_t *buf_data = dict_get (args, "BUF");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct statvfs *stbuf = NULL;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-  
-  if (op_ret >= 0) {
-    if (!buf_data) {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    } else {
-      buf = data_to_str (buf_data);
-      stbuf = calloc (1, sizeof (struct statvfs));
-      
-      {
-	uint32_t bsize;
-	uint32_t frsize;
-	uint64_t blocks;
-	uint64_t bfree;
-	uint64_t bavail;
-	uint64_t files;
-	uint64_t ffree;
-	uint64_t favail;
-	uint32_t fsid;
-	uint32_t flag;
-	uint32_t namemax;
-	
-	sscanf (buf, GF_STATFS_SCAN_FMT_STR,
-		&bsize,
-		&frsize,
-		&blocks,
-		&bfree,
-		&bavail,
-		&files,
-		&ffree,
-		&favail,
-		&fsid,
-		&flag,
-		&namemax);
-	
-	stbuf->f_bsize = bsize;
-	stbuf->f_frsize = frsize;
-	stbuf->f_blocks = blocks;
-	stbuf->f_bfree = bfree;
-	stbuf->f_bavail = bavail;
-	stbuf->f_files = files;
-	stbuf->f_ffree = ffree;
-	stbuf->f_favail = favail;
-	stbuf->f_fsid = fsid;
-	stbuf->f_flag = flag;
-	stbuf->f_namemax = namemax;
-	
-      }
-    }
-  }
-  STACK_UNWIND (frame, op_ret, op_errno, stbuf);
+	rsp = gf_param (hdr);
 
-  if (stbuf)
-    free (stbuf);
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-  return 0;
-}
+	STACK_UNWIND (frame, op_ret, op_errno);
 
-/*
- * client_fsyncdir_cbk - fsyncdir callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-int32_t 
-client_fsyncdir_cbk (call_frame_t *frame,
-		     dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	return 0;
 }
 
 /*
@@ -3992,42 +4722,284 @@ client_fsyncdir_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_access_cbk (call_frame_t *frame,
-		   dict_t *args)
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	gf_fop_access_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
+}
+
+
+
+/*
+ * client_lookup_cbk - lookup callback for client protocol
+ *
+ * @frame: call frame
+ * @args: arguments dictionary
+ *
+ * not for external reference
+ */
+int32_t
+client_lookup_cbk (call_frame_t *frame,
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
+{
+	struct stat stbuf = {0, };
+	inode_t *inode = NULL;
+	dict_t *xattr = NULL;
+	gf_fop_lookup_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	size_t dict_len = 0;
+	char *dictbuf = NULL;
+	int32_t ret = -1;
+	int32_t gf_errno = 0;
+
+	inode = frame->local;
+	frame->local = NULL;
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+
+	if (op_ret == 0) {
+		op_ret = -1;
+		gf_stat_to_stat (&rsp->stat, &stbuf);
+		this_ino_set (inode, frame->this, stbuf.st_ino);
+
+		dict_len = ntoh32 (rsp->dict_len);
+
+		if (dict_len > 0) {
+			dictbuf = memdup (rsp->dict, dict_len);
+			GF_VALIDATE_OR_GOTO(frame->this->name, dictbuf, fail);
+			
+			xattr = dict_new();
+			GF_VALIDATE_OR_GOTO(frame->this->name, xattr, fail);
+
+			ret = dict_unserialize (dictbuf, dict_len, &xattr);
+			if (ret < 0) {
+				gf_log (frame->this->name, GF_LOG_ERROR,
+					"failed to serialize dictionary(%p)",
+					dictbuf);
+				goto fail;
+			} else {
+				xattr->extra_free = dictbuf;
+				dictbuf = NULL;
+			}
+		}
+		op_ret = 0;
+	}
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+
+fail:
+	STACK_UNWIND (frame, op_ret, op_errno, inode, &stbuf, xattr);
+	
+	if (dictbuf)
+		free (dictbuf);
+
+	if (xattr)
+		dict_unref (xattr);
+
+	return 0;
+}
+
+static dir_entry_t *
+gf_bin_to_direntry (char *buf, size_t count)
+{
+	int32_t idx = 0, bread = 0;
+	size_t rcount = 0;
+	char *ender = NULL, *buffer = NULL;
+	char tmp_buf[512] = {0,};
+	dir_entry_t *trav = NULL, *prev = NULL;
+	dir_entry_t *thead = NULL, *head = NULL;
+
+	thead = CALLOC (1, sizeof (dir_entry_t));
+	GF_VALIDATE_OR_GOTO("client-protocol", thead, fail);
+
+	buffer = buf;
+	prev = thead;
+
+	for (idx = 0; idx < count ; idx++) {
+		bread = 0;
+		trav = CALLOC (1, sizeof (dir_entry_t));
+		GF_VALIDATE_OR_GOTO("client-protocol", trav, fail);
+
+		ender = strchr (buffer, '/');
+		if (!ender)
+			break;
+		rcount = ender - buffer;
+		trav->name = CALLOC (1, rcount + 2);
+		GF_VALIDATE_OR_GOTO("client-protocol", trav->name, fail);
+
+		strncpy (trav->name, buffer, rcount);
+		bread = rcount + 1;
+		buffer += bread;
+
+		ender = strchr (buffer, '\n');
+		if (!ender)
+			break;
+		rcount = ender - buffer;
+		strncpy (tmp_buf, buffer, rcount);
+		bread = rcount + 1;
+		buffer += bread;
+			
+		gf_string_to_stat (tmp_buf, &trav->buf);
+
+		ender = strchr (buffer, '\n');
+		if (!ender)
+			break;
+		rcount = ender - buffer;
+		*ender = '\0';
+		if (S_ISLNK (trav->buf.st_mode))
+			trav->link = strdup (buffer);
+		else
+			trav->link = "";
+
+		bread = rcount + 1;
+		buffer += bread;
+
+		prev->next = trav;
+		prev = trav;
+	}
+	
+	head = thead;
+fail:
+	return head;
 }
 
 int32_t
-client_incver_cbk (call_frame_t *frame,
-		   dict_t *args)
+gf_free_direntry(dir_entry_t *head)
 {
-  int32_t op_ret, op_errno;
+	dir_entry_t *prev = NULL, *trav = NULL;
 
-  op_ret = data_to_int32 (dict_get (args, "RET"));
-  op_errno = data_to_int32 (dict_get (args, "ERRNO"));
+	prev = head;
+	GF_VALIDATE_OR_GOTO("client-protocol", prev, fail);
 
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	trav = head->next;
+	while (trav) {
+		prev->next = trav->next;
+		FREE (trav->name);
+		if (S_ISLNK (trav->buf.st_mode))
+			FREE (trav->link);
+		FREE (trav);
+		trav = prev->next;
+	}
+	FREE (head);
+fail:
+	return 0;
+}
+/*
+ * client_getdents_cbk - readdir callback for client protocol
+ * @frame: call frame
+ * @args: argument dictionary
+ *
+ * not for external reference
+ */
+int32_t
+client_getdents_cbk (call_frame_t *frame,
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
+{
+	gf_fop_getdents_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	int32_t gf_errno = 0;
+	int32_t nr_count = 0;
+	dir_entry_t *entry = NULL;
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+
+	if (op_ret >= 0) {
+		nr_count = ntoh32 (rsp->count);		
+		entry = gf_bin_to_direntry(buf, nr_count);
+		if (entry == NULL) {
+			op_ret = -1;
+			op_errno = EINVAL;
+		}
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, entry, nr_count);
+
+	if (op_ret >= 0) {
+		/* Free the buffer */
+		FREE (buf);
+		gf_free_direntry(entry);
+      	}
+
+	return 0;
 }
 
+/*
+ * client_statfs_cbk - statfs callback for client protocol
+ * @frame: call frame
+ * @args: argument dictionary
+ *
+ * not for external reference
+ */
+int32_t
+client_statfs_cbk (call_frame_t *frame,
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
+{
+	struct statvfs stbuf = {0, };
+	gf_fop_statfs_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret == 0)
+	{
+		gf_statfs_to_statfs (&rsp->statfs, &stbuf);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, &stbuf);
+
+	return 0;
+}
+
+/*
+ * client_fsyncdir_cbk - fsyncdir callback for client protocol
+ * @frame: call frame
+ * @args: argument dictionary
+ *
+ * not for external reference
+ */
+int32_t
+client_fsyncdir_cbk (call_frame_t *frame,
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
+{
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
+}
 
 /*
  * client_setxattr_cbk - setxattr callback for client protocol
@@ -4036,27 +5008,23 @@ client_incver_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_setxattr_cbk (call_frame_t *frame,
-		     dict_t *args)
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
+	gf_fop_setxattr_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
 }
 
 /*
@@ -4066,76 +5034,85 @@ client_setxattr_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_getxattr_cbk (call_frame_t *frame,
-		     dict_t *args)
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
 {
-  data_t *buf_data = dict_get (args, "DICT");
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  dict_t *dict = NULL;
+	gf_fop_getxattr_rsp_t *rsp = NULL;
+	int32_t op_ret   = 0;
+	int32_t gf_errno = 0;
+	int32_t op_errno = 0;
+	int32_t dict_len = 0;
+	dict_t *dict = NULL;
+	int32_t ret = -1;
+	char *dictbuf = NULL;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
+	rsp = gf_param (hdr);
+	GF_VALIDATE_OR_GOTO(frame->this->name, rsp, fail);
 
-  dict = get_new_dict ();
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
 
-  if (op_ret >= 0 && buf_data) {
-    /* Unserialize the dictionary recieved */
-    char *buf = memdup (buf_data->data, buf_data->len);
-    dict_unserialize (buf, buf_data->len, &dict);
-    dict->extra_free = buf;
-    dict_del (dict, "__@@protocol_client@@__key"); //hack
-  }
+	if (op_ret >= 0) {
+		op_ret = -1;
+		dict_len = ntoh32 (rsp->dict_len);
 
-  if (dict)
-    dict_ref (dict);
+		if (dict_len > 0) {
+			dictbuf = memdup (rsp->dict, dict_len);
+			GF_VALIDATE_OR_GOTO(frame->this->name, dictbuf, fail);
 
-  STACK_UNWIND (frame, op_ret, op_errno, dict);
+			dict = dict_new();
+			GF_VALIDATE_OR_GOTO(frame->this->name, dict, fail);
 
-  if (dict) 
-    dict_unref (dict);
+			ret = dict_unserialize (dictbuf, dict_len, &dict);
+			if (ret < 0) {
+				/* TODO: This log doesn't make sense */
+				gf_log (frame->this->name, GF_LOG_ERROR,
+					"failed to serialize dictionary(%p)",
+					dict);
+				goto fail;
+			} else {
+				dict->extra_free = dictbuf;
+				dictbuf = NULL;
+			}
+		}
+		op_ret = 0;
+	}
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+fail:
+	STACK_UNWIND (frame, op_ret, op_errno, dict);
+	
+	if (dictbuf)
+		free (dictbuf);
 
-  return 0;
+	if (dict)
+		dict_unref (dict);
+
+	return 0;
 }
 
 /*
  * client_removexattr_cbk - removexattr callback for client protocol
  * @frame: call frame
  * @args: argument dictionary
- * 
+ *
  * not for external reference
  */
-int32_t 
+int32_t
 client_removexattr_cbk (call_frame_t *frame,
-			dict_t *args)
+                        gf_hdr_common_t *hdr, size_t hdrlen,
+                        char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
 }
 
 /*
@@ -4145,53 +5122,163 @@ client_removexattr_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
-client_lk_cbk (call_frame_t *frame,
-	       dict_t *args)
+int32_t
+client_lk_common_cbk (call_frame_t *frame,
+		      gf_hdr_common_t *hdr, size_t hdrlen,
+		      char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *type_data = dict_get (args, "TYPE");
-  data_t *whence_data = dict_get (args, "WHENCE");
-  data_t *start_data = dict_get (args, "START");
-  data_t *len_data = dict_get (args, "LEN");
-  data_t *pid_data = dict_get (args, "PID");
-  struct flock lock = {0,};
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-  
-  if (op_ret >= 0) {
-    if (!type_data ||
-	!whence_data ||
-	!start_data ||
-	!len_data ||
-	!pid_data) {
-      gf_log (frame->this->name, GF_LOG_ERROR,
-	      "missed keys in reply dictionary, returning EINVAL");
-      STACK_UNWIND (frame, -1, EINVAL, NULL);
-      return 0;
-    }
+	struct flock lock = {0,};
+	gf_fop_lk_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
 
-    lock.l_type =  data_to_int16 (type_data);
-    lock.l_whence =  data_to_int16 (whence_data);
-    lock.l_start =  data_to_int64 (start_data);
-    lock.l_len =  data_to_int64 (len_data);
-    lock.l_pid =  data_to_uint32 (pid_data);
-  }
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
 
-  STACK_UNWIND (frame, op_ret, op_errno, &lock);
-  return 0;
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret >= 0) {
+		gf_flock_to_flock (&rsp->flock, &lock);
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, &lock);
+	return 0;
 }
+
+
+/*
+ * client_gf_file_lk_cbk - gf_file_lk callback for client protocol
+ * @frame: call frame
+ * @args: argument dictionary
+ *
+ * not for external reference
+ */
+int32_t
+client_inodelk_cbk (call_frame_t *frame,
+		    gf_hdr_common_t *hdr, size_t hdrlen,
+		    char *buf, size_t buflen)
+{
+	gf_fop_inodelk_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
+
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+	return 0;
+}
+
+
+int32_t
+client_finodelk_cbk (call_frame_t *frame,
+		     gf_hdr_common_t *hdr, size_t hdrlen,
+		     char *buf, size_t buflen)
+{
+	gf_fop_finodelk_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
+
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+	return 0;
+}
+
+
+/*
+ * client_entrylk_cbk - entrylk callback for client protocol
+ * @frame: call frame
+ * @args: argument dictionary
+ *
+ * not for external reference
+ */
+int32_t
+client_entrylk_cbk (call_frame_t *frame,
+		    gf_hdr_common_t *hdr, size_t hdrlen,
+		    char *buf, size_t buflen)
+{
+	gf_fop_entrylk_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
+
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+	return 0;
+}
+
+int32_t
+client_fentrylk_cbk (call_frame_t *frame,
+		     gf_hdr_common_t *hdr, size_t hdrlen,
+		     char *buf, size_t buflen)
+{
+	gf_fop_fentrylk_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
+
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+	return 0;
+}
+
 
 /**
  * client_writedir_cbk -
@@ -4201,155 +5288,25 @@ client_lk_cbk (call_frame_t *frame,
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_setdents_cbk (call_frame_t *frame,
-		     dict_t *args)
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
 }
 
 
-/* 
- * client_lock_cbk - lock callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-int32_t 
-client_lock_cbk (call_frame_t *frame,
-		 dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
-}
 
 /*
- * client_unlock_cbk - unlock callback for client protocol
- *
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-int32_t 
-client_unlock_cbk (call_frame_t *frame,
-		   dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
-}
-
-/*
- * client_listlocks_cbk - listlocks callback for client protocol
- *
- * @frame: call frame
- * @args: arguments dictionary
- *
- * not for external reference
- */
-
-int32_t 
-client_listlocks_cbk (call_frame_t *frame,
-		      dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno, "");
-  return 0;
-}
-
-/*
- * client_fsck_cbk - fsck callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- *
- * not for external reference
- */
-
-int32_t 
-client_fsck_cbk (call_frame_t *frame,
-		 dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
-}
-
-/* 
  * client_stats_cbk - stats callback for client protocol
  *
  * @frame: call frame
@@ -4358,170 +5315,89 @@ client_fsck_cbk (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_stats_cbk (call_frame_t *frame,
-		  dict_t *args)
+                  gf_hdr_common_t *hdr, size_t hdrlen,
+                  char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *buf_data = dict_get (args, "BUF");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  char *buf = NULL;
-  struct xlator_stats stats = {0,};
+	struct xlator_stats stats = {0,};
+	gf_mop_stats_rsp_t *rsp = NULL;
+	char *buffer = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
 
-  if (!ret_data || !err_data || !buf_data) {
-    struct xlator_stats stats = {0,};
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, &stats);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  if (op_ret >= 0) {
-    buf = data_to_bin (buf_data);
-    
-    sscanf (buf, "%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64"\n",
-	    &stats.nr_files,
-	    &stats.disk_usage,
-	    &stats.free_disk,
-	    &stats.total_disk_size,
-	    &stats.read_usage,
-	    &stats.write_usage,
-	    &stats.disk_speed,
-	    &stats.nr_clients);
-  }
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, &stats);
-  return 0;
-}
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
 
-/* 
- * client_lookup_cbk - lookup callback for client protocol
- *
- * @frame: call frame
- * @args: arguments dictionary
- * 
- * not for external reference
- */
-int32_t
-client_lookup_cbk (call_frame_t *frame,
-		   dict_t *args)
-{
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *stat_data = dict_get (args, "STAT");
-  data_t *xattr_data = dict_get (args, "DICT");
-  char *stat_buf = NULL;
-  struct stat *stbuf = NULL;
-  client_local_t *local = frame->local;
-  inode_t *inode = NULL;
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  dict_t *xattr = NULL;
+	if (op_ret >= 0)
+	{
+		buffer = rsp->buf;
 
-  inode = local->inode;
+		sscanf (buffer, "%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64
+			",%"SCNx64",%"SCNx64",%"SCNx64",%"SCNx64"\n",
+			&stats.nr_files,
+			&stats.disk_usage,
+			&stats.free_disk,
+			&stats.total_disk_size,
+			&stats.read_usage,
+			&stats.write_usage,
+			&stats.disk_speed,
+			&stats.nr_clients);
+	}
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, inode, stbuf);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);
-
-  if (op_ret >= 0) {
-    if (!stat_data) {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    } else {
-      data_t *old_ino_data = dict_get (inode->ctx, frame->this->name);
-      
-      stat_buf = data_to_str (stat_data);
-      stbuf = str_to_stat (stat_buf);
-      
-      if (!old_ino_data) {
-	dict_set (inode->ctx, (frame->this)->name, 
-		  data_from_uint64 (stbuf->st_ino));
-      } else {
-	if (data_to_uint64 (old_ino_data) != stbuf->st_ino)
-	  dict_set (inode->ctx, (frame->this)->name, 
-		    data_from_uint64 (stbuf->st_ino));
-      }
-      
-      if (xattr_data) {
-	char *buf = memdup (xattr_data->data, xattr_data->len);
-	xattr = get_new_dict();
-	dict_unserialize (buf, xattr_data->len, &xattr);
-	xattr->extra_free = buf;
-      }
-    }
-  }
-
-  if (xattr)
-    dict_ref (xattr);
-
-  STACK_UNWIND (frame, op_ret, op_errno, inode, stbuf, xattr);
-  
-  if (xattr)
-    dict_unref (xattr);
-
-  if (stbuf)
-    free (stbuf);
-
-  return 0;
-}
-
-/*
- * client_forget_cbk - forget callback for client protocol
- * @frame: call frame
- * @args: argument dictionary
- * 
- * not for external reference
- */
-int32_t
-client_forget_cbk (call_frame_t *frame,
-		   dict_t *args)
-{
-  STACK_DESTROY (frame->root);
-  return 0;
+	STACK_UNWIND (frame, op_ret, op_errno, &stats);
+	return 0;
 }
 
 /*
  * client_getspec - getspec function for client protocol
  * @frame: call frame
  * @this: client protocol xlator structure
- * @flag: 
+ * @flag:
  *
  * external reference through client_protocol_xlator->fops->getspec
  */
 int32_t
 client_getspec (call_frame_t *frame,
-		xlator_t *this,
-		int32_t flag)
+                xlator_t *this,
+		const char *key,
+                int32_t flag)
 {
-  dict_t *request = get_new_dict ();
-  int32_t ret = -1;
+	gf_hdr_common_t *hdr = NULL;
+	gf_mop_getspec_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int keylen = 0;
+	int ret = -1;
 
-  dict_set (request, "foo", str_to_data ("bar"));
+	if (key)
+		keylen = STRLEN_0(key);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_MOP_REQUEST,
-			      GF_MOP_GETSPEC, request);
+	hdrlen = gf_hdr_len (req, keylen);
+	hdr    = gf_hdr_new (req, keylen);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, unwind);
 
-  dict_destroy (request);
+	req        = gf_param (hdr);
+	req->flags = hton32 (flag);
+	req->keylen = hton32 (keylen);
+	if (keylen)
+		strcpy (req->key, key);
 
-  return ret;
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_MOP_REQUEST, GF_MOP_GETSPEC,
+				    hdr, hdrlen, NULL, 0, NULL);
+
+	return ret;
+unwind:
+	if (hdr)
+		free (hdr);
+	STACK_UNWIND(frame, -1, EINVAL, NULL);
+	return 0;
 }
 
 
-/* 
+/*
  * client_getspec_cbk - getspec callback for client protocol
  *
  * @frame: call frame
@@ -4530,111 +5406,102 @@ client_getspec (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_getspec_cbk (call_frame_t *frame,
-		    dict_t *args)
+                    gf_hdr_common_t *hdr, size_t hdrlen,
+                    char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  data_t *spec_data = NULL;
+	gf_mop_getspec_rsp_t *rsp = NULL;
+	char *spec_data = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	int32_t gf_errno = 0;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  if (op_ret >= 0) {
-    spec_data = dict_get (args, "spec-file-data");
-  }
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+	rsp = gf_param (hdr);
 
-  STACK_UNWIND (frame, op_ret, op_errno, (spec_data?spec_data->data:""));
-  return 0;
+	if (op_ret >= 0) {
+		spec_data = rsp->spec;
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, spec_data);
+	return 0;
 }
 
 int32_t
 client_checksum (call_frame_t *frame,
-		 xlator_t *this,
-		 loc_t *loc,
-		 int32_t flag)
+                 xlator_t *this,
+                 loc_t *loc,
+                 int32_t flag)
 {
-  int32_t ret = -1;
-  ino_t ino = 0;
-  dict_t *request = NULL;
-  data_t *ino_data = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	gf_fop_checksum_req_t *req = NULL;
+	size_t hdrlen = -1;
+	int ret = -1;
+	client_private_t *priv = this->private;
 
-  if (loc->inode && loc->inode->ctx)
-    ino_data = dict_get (loc->inode->ctx, this->name);
+	if (priv->child) {
+		STACK_WIND (frame,
+			    default_checksum_cbk,
+			    priv->child,
+			    priv->child->fops->checksum,
+			    loc,
+			    flag);
 
-  if (ino_data) {
-    ino = data_to_uint64 (ino_data);
-  } else {
-    TRAP_ON (ino_data == NULL);
-    gf_log (this->name, GF_LOG_ERROR, "%s: returning EINVAL", loc->path);
-    frame->root->rsp_refs = NULL;
-    STACK_UNWIND (frame, -1, EINVAL, NULL);
-    return 0;
-  }
+		return 0;
+	}
 
-  request = get_new_dict ();
-  dict_set (request, "PATH", str_to_data ((char *)loc->path));
-  dict_set (request, "INODE", data_from_uint64 (ino));
-  dict_set (request, "FLAG", data_from_uint32 (flag));
+	hdrlen = gf_hdr_len (req, strlen (loc->path) + 1);
+	hdr    = gf_hdr_new (req, strlen (loc->path) + 1);
+	req    = gf_param (hdr);
 
-  ret = client_protocol_xfer (frame, this, GF_OP_TYPE_FOP_REQUEST,
-			      GF_FOP_CHECKSUM, request);
+	req->ino  = hton64 (this_ino_get (loc->inode, this));
+	req->flag = hton32 (flag);
+	strcpy (req->path, loc->path);
 
-  dict_destroy (request);
+	ret = protocol_client_xfer (frame, this,
+				    GF_OP_TYPE_FOP_REQUEST, GF_FOP_CHECKSUM,
+				    hdr, hdrlen, NULL, 0, NULL);
 
-  return ret;
+	return ret;
 }
 
-int32_t 
+int32_t
 client_checksum_cbk (call_frame_t *frame,
-		    dict_t *args)
+                     gf_hdr_common_t *hdr, size_t hdrlen,
+                     char *buf, size_t buflen)
 {
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  uint8_t *fchecksum = NULL;
-  uint8_t *dchecksum = NULL;
-  data_t *fchecksum_data = NULL;
-  data_t *dchecksum_data = NULL;
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
+	gf_fop_checksum_rsp_t *rsp = NULL;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+	int32_t gf_errno = 0;
+	unsigned char *fchecksum = NULL;
+	unsigned char *dchecksum = NULL;
+	client_private_t *priv = frame->this->private;
+	client_connection_private_t *cprivate = priv->transport->xl_private;
 
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN, NULL, NULL);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  if (op_ret >= 0) {
-    fchecksum_data = dict_get (args, "file-checksum-data");
-    dchecksum_data = dict_get (args, "dir-checksum-data");
-  
-    if (fchecksum_data && dchecksum_data) {
-      fchecksum = data_to_bin (fchecksum_data);    
-      dchecksum = data_to_bin (dchecksum_data);
-    } else {
-      gf_log (frame->this->name, GF_LOG_ERROR, 
-	      "no proper reply from server, returning EINVAL");
-      op_ret = -1;
-      op_errno = EINVAL;
-    }
-  }
+	pthread_mutex_lock (&(cprivate->lock));
+	{
+		if (cprivate->slow_op_count)
+			cprivate->slow_op_count--;
+	}
+	pthread_mutex_unlock (&(cprivate->lock));
 
-  STACK_UNWIND (frame, op_ret, op_errno, fchecksum, dchecksum);
-  return 0;
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	gf_errno = ntoh32 (hdr->rsp.op_errno);
+	op_errno = gf_error_to_errno (gf_errno);
+
+	if (op_ret >= 0) {
+		fchecksum = rsp->fchecksum;
+		dchecksum = rsp->dchecksum + ZR_FILENAME_MAX;
+	}
+
+	STACK_UNWIND (frame, op_ret, op_errno, fchecksum, dchecksum);
+	return 0;
 }
 
 
@@ -4646,126 +5513,187 @@ client_checksum_cbk (call_frame_t *frame,
  * not for external reference
  */
 
-int32_t 
+int32_t
 client_setspec_cbk (call_frame_t *frame,
-		    dict_t *args)
+                    gf_hdr_common_t *hdr, size_t hdrlen,
+                    char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	int32_t op_ret = 0;
+	int32_t op_errno = 0;
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	STACK_UNWIND (frame, op_ret, op_errno);
+
+	return 0;
 }
 
-/* 
+/*
  * client_setvolume_cbk - setvolume callback for client protocol
  * @frame:  call frame
  * @args: argument dictionary
  *
  * not for external reference
  */
-int32_t 
+int32_t
 client_setvolume_cbk (call_frame_t *frame,
-		      dict_t *args)
+                      gf_hdr_common_t *hdr, size_t hdrlen,
+                      char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  data_t *error_data = dict_get (args, "ERROR");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  if (error_data)
-    gf_log (frame->this->name, GF_LOG_WARNING, "%s", error_data->data);
+	gf_mop_setvolume_rsp_t *rsp = NULL;
+	client_connection_private_t *cprivate = NULL;
+	client_private_t *priv = NULL;
+	glusterfs_ctx_t *ctx = NULL; 
+	xlator_t *this = NULL;
+	xlator_list_t *parent = NULL;
+	transport_t *trans = NULL;
+	dict_t *reply = NULL;
+	char *remote_subvol = NULL;
+	char *remote_error = NULL;
+	char *process_uuid = NULL;
+	int32_t ret = -1;
+	int32_t op_ret   = -1;
+	int32_t op_errno = EINVAL;
+	int32_t dict_len = 0;
 
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	this  = frame->this;
+	priv  = this->private;
+	trans = priv->transport;
+	cprivate  = trans->xl_private;
+
+	rsp = gf_param (hdr);
+
+	op_ret   = ntoh32 (hdr->rsp.op_ret);
+	op_errno = gf_error_to_errno (ntoh32 (hdr->rsp.op_errno));
+
+	if (op_ret < 0 && op_errno == ENOTCONN) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"setvolume failed (%s)",
+			strerror (op_errno));
+		goto out;
+	}
+
+	reply = dict_new ();
+	GF_VALIDATE_OR_GOTO(this->name, reply, out);
+
+	dict_len = ntoh32 (rsp->dict_len);
+	ret = dict_unserialize (rsp->buf, dict_len, &reply);
+	if (ret < 0) {
+		gf_log (frame->this->name, GF_LOG_ERROR,
+			"failed to unserialize buffer(%p) to dictionary",
+			rsp->buf);
+		goto out;
+	}
+	
+	ret = dict_get_str (reply, "ERROR", &remote_error);
+	if (ret < 0) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to get ERROR string from reply dictionary");
+	}
+
+	ret = dict_get_str (reply, "process-uuid", &process_uuid);
+	if (ret < 0) {
+		gf_log (this->name, GF_LOG_DEBUG,
+			"failed to get 'process-uuid' from reply dictionary");
+	}
+
+	if (op_ret < 0) {
+		gf_log (trans->xl->name, GF_LOG_ERROR,
+			"SETVOLUME on remote-host failed: %s",
+			remote_error ? remote_error : strerror (op_errno));
+		errno = op_errno;
+		if (op_errno == ENOTCONN)
+			goto out;
+	} else {
+		ctx = get_global_ctx_ptr ();
+		if (process_uuid && !strcmp (ctx->process_uuid,process_uuid)) {
+			ret = dict_get_str (this->options, "remote-subvolume",
+					    &remote_subvol);
+			if (!remote_subvol) 
+				goto out;
+			
+			gf_log (this->name, GF_LOG_WARNING, 
+				"attaching to the local volume '%s'",
+				remote_subvol);
+
+			/* TODO: */
+			priv->child = xlator_search_by_name (this, 
+							     remote_subvol);
+		}
+		gf_log (trans->xl->name, GF_LOG_DEBUG,
+			"SETVOLUME on remote-host succeeded");
+
+		pthread_mutex_lock (&(cprivate->lock));
+		{
+			cprivate->connected = 1;
+		}
+		pthread_mutex_unlock (&(cprivate->lock));
+
+		parent = trans->xl->parents;
+		while (parent) {
+			parent->xlator->notify (parent->xlator,
+						GF_EVENT_CHILD_UP,
+						trans->xl);
+			parent = parent->next;
+		}
+	}
+
+out:
+	STACK_DESTROY (frame->root);
+
+	if (reply)
+		dict_unref (reply);
+
+	return op_ret;
 }
 
 /*
- * client_getvolume_cbk - getvolume callback for client protocol
+ * client_enosys_cbk -
  * @frame: call frame
- * @args: argument dictionary
  *
  * not for external reference
  */
-int32_t 
-client_getvolume_cbk (call_frame_t *frame,
-		      dict_t *args)
+int32_t
+client_enosys_cbk (call_frame_t *frame,
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
 {
-  data_t *ret_data = dict_get (args, "RET");
-  data_t *err_data = dict_get (args, "ERRNO");
-  int32_t op_ret = -1;
-  int32_t op_errno = ENOTCONN;
-  
-  if (!ret_data || !err_data) {
-    gf_log (frame->this->name, GF_LOG_ERROR, 
-	    "no proper reply from server, returning ENOTCONN");
-    STACK_UNWIND (frame, -1, ENOTCONN);
-    return 0;
-  }
-  
-  op_ret = data_to_int32 (ret_data);
-  op_errno = data_to_int32 (err_data);  
-  
-  STACK_UNWIND (frame, op_ret, op_errno);
-  return 0;
+	STACK_DESTROY (frame->root);
+	return 0;
 }
-
 
 void
 client_protocol_reconnect (void *trans_ptr)
 {
-  transport_t *trans = trans_ptr;
-  client_proto_priv_t *priv = trans->xl_private;
-  struct timeval tv = {0, 0};
+	transport_t *trans = trans_ptr;
+	client_connection_private_t *cprivate = trans->xl_private;
+	struct timeval tv = {0, 0};
 
-  pthread_mutex_lock (&priv->lock);
-  {
-    if (priv->reconnect)
-      gf_timer_call_cancel (trans->xl->ctx, priv->reconnect);
-    priv->reconnect = 0;
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		if (cprivate->reconnect)
+			gf_timer_call_cancel (trans->xl->ctx, 
+					      cprivate->reconnect);
+		cprivate->reconnect = 0;
 
-    if (!priv->connected) {
-      uint32_t n_plus_1 = priv->n_minus_1 + priv->n;
+		if (cprivate->connected == 0) {
+			tv.tv_sec = 10;
 
-      priv->n_minus_1 = priv->n;
-      priv->n = n_plus_1;
-      tv.tv_sec = n_plus_1;
+			gf_log (trans->xl->name, GF_LOG_DEBUG, 
+				"attempting reconnect");
+			transport_connect (trans);
 
-      gf_log (trans->xl->name, GF_LOG_DEBUG, "attempting reconnect");
-      transport_connect (trans);
-
-      priv->reconnect = gf_timer_call_after (trans->xl->ctx, tv,
-					     client_protocol_reconnect, trans);
-    } else {
-      gf_log (trans->xl->name, GF_LOG_DEBUG, "breaking reconnect chain");
-      priv->n_minus_1 = 0;
-      priv->n = 1;
-    }
-  }
-  pthread_mutex_unlock (&priv->lock);
+			cprivate->reconnect = 
+				gf_timer_call_after (trans->xl->ctx, tv,
+						     client_protocol_reconnect,
+						     trans);
+		} else {
+			gf_log (trans->xl->name, GF_LOG_DEBUG, 
+				"breaking reconnect chain");
+		}
+	}
+	pthread_mutex_unlock (&cprivate->lock);
 }
 
 /*
@@ -4773,136 +5701,175 @@ client_protocol_reconnect (void *trans_ptr)
  * @trans: transport object
  *
  */
-static int32_t 
-client_protocol_cleanup (transport_t *trans)
+int
+protocol_client_cleanup (transport_t *trans)
 {
-  client_proto_priv_t *priv = trans->xl_private;
-  //  glusterfs_ctx_t *ctx = trans->xl->ctx;
-  dict_t *saved_frames = NULL;
+	client_connection_private_t *cprivate = NULL;
+	struct saved_frames         *saved_frames = NULL;
+	data_pair_t                 *trav = NULL;
+	xlator_t                    *this = NULL;
 
-  gf_log (trans->xl->name, GF_LOG_WARNING,
-	  "cleaning up state in transport object %p", trans);
 
-  pthread_mutex_lock (&priv->lock);
-  {
-    saved_frames = priv->saved_frames;
-    priv->saved_frames = get_new_dict_full (1024);
-    data_pair_t *trav = priv->saved_fds->members_list;
-    xlator_t *this = trans->xl;
-      
-    while (trav) {
-      fd_t *tmp = (fd_t *)(long) strtoul (trav->key, NULL, 0);
-      if (tmp->ctx)
-	dict_del (tmp->ctx, this->name);
-      trav = trav->next;
-    }
-      
-    dict_destroy (priv->saved_fds);
+	cprivate = trans->xl_private;
+			
+	gf_log (trans->xl->name, GF_LOG_DEBUG,
+		"cleaning up state in transport object %p", trans);
 
-    priv->saved_fds = get_new_dict_full (64);
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		saved_frames = cprivate->saved_frames;
+		cprivate->saved_frames = saved_frames_new ();
 
-  
-    /* bailout logic cleanup */
-    memset (&(priv->last_sent), 0, sizeof (priv->last_sent));
-    memset (&(priv->last_recieved), 0, sizeof (priv->last_recieved));
+		trav = cprivate->saved_fds->members_list;
+		this = trans->xl;
 
-    if (!priv->timer) {
-      gf_log (trans->xl->name, GF_LOG_DEBUG, "priv->timer is NULL!!!!");
-    } else {
-      gf_timer_call_cancel (trans->xl->ctx, priv->timer);
-      priv->timer = NULL;
-    }
+		while (trav) {
+			fd_t *fd_tmp = (fd_t *)(long) strtoul (trav->key, 
+							       NULL, 0);
+			if (fd_tmp->ctx)
+				dict_del (fd_tmp->ctx, this->name);
+			trav = trav->next;
+		}
 
-    if (!priv->reconnect) {
-      /* :O This part is empty.. any thing missing? */
-    }
-  }
-  pthread_mutex_unlock (&priv->lock);
+		dict_destroy (cprivate->saved_fds);
 
-  {
-    data_pair_t *trav = saved_frames->members_list;
-    dict_t *reply = dict_ref (get_new_dict ());
-    reply->is_locked = 1;
-    while (trav && trav->next)
-      trav = trav->next;
-    while (trav) {
-      /* TODO: reply functions are different for different fops. */
-      call_frame_t *tmp = (call_frame_t *) (trav->value->data);
+		cprivate->saved_fds = get_new_dict_full (64);
 
-      gf_log (trans->xl->name, GF_LOG_ERROR,
-	      "forced unwinding frame type(%d) op(%d) reply=@%p", 
-	      tmp->type, tmp->op, reply);
-      tmp->root->rsp_refs = dict_ref (reply);
+		/* bailout logic cleanup */
+		memset (&(cprivate->last_sent), 0, 
+			sizeof (cprivate->last_sent));
 
-      if (tmp->type == GF_OP_TYPE_FOP_REQUEST)
-	gf_fops[tmp->op] (tmp, reply);
-      else
-	gf_mops[tmp->op] (tmp, reply);
-      dict_unref (reply);
-      trav = trav->prev;
-    }
-    dict_unref (reply);
+		memset (&(cprivate->last_received), 0, 
+			sizeof (cprivate->last_received));
 
-    dict_destroy (saved_frames);
-  }
+		if (cprivate->timer) {
+			gf_timer_call_cancel (trans->xl->ctx, cprivate->timer);
+			cprivate->timer = NULL;
+		}
 
-  return 0;
+		if (cprivate->reconnect == NULL) {
+			/* :O This part is empty.. any thing missing? */
+		}
+	}
+	pthread_mutex_unlock (&cprivate->lock);
+
+	saved_frames_destroy (trans->xl, saved_frames,
+			      gf_fops, gf_mops, gf_cbks);
+
+	return 0;
+}
+
+
+/* cbk callbacks */
+int32_t
+client_releasedir_cbk (call_frame_t *frame,
+		       gf_hdr_common_t *hdr, size_t hdrlen,
+		       char *buf, size_t buflen)
+{
+	STACK_DESTROY (frame->root);
+	return 0;
+}
+
+int32_t
+client_release_cbk (call_frame_t *frame,
+		    gf_hdr_common_t *hdr, size_t hdrlen,
+		    char *buf, size_t buflen)
+{
+	STACK_DESTROY (frame->root);
+	return 0;
+}
+
+int
+client_forget_cbk (call_frame_t *frame,
+                   gf_hdr_common_t *hdr, size_t hdrlen,
+                   char *buf, size_t buflen)
+{
+	client_private_t *priv = frame->this->private;
+	client_forget_t  forget = {0, };
+	uint8_t          send_forget = 0;
+	int32_t          ret = -1;
+
+	LOCK (&priv->forget.lock);
+	{
+		priv->forget.frames_in_transit--;
+
+		ret = client_get_forgets (frame->this, &forget);
+		if (ret <= 0)
+			send_forget = 0;
+		else
+			send_forget = 1;
+	}
+	UNLOCK (&priv->forget.lock);
+
+	if (send_forget) {
+		ret = protocol_client_xfer (forget.frame, frame->this,
+					    GF_OP_TYPE_CBK_REQUEST, 
+					    GF_CBK_FORGET,
+					    forget.hdr, forget.hdrlen, 
+					    NULL, 0, NULL);
+	}
+	
+	STACK_DESTROY (frame->root);
+	return 0;
 }
 
 static gf_op_t gf_fops[] = {
-  client_stat_cbk,
-  client_readlink_cbk,
-  client_mknod_cbk,
-  client_mkdir_cbk,
-  client_unlink_cbk,
-  client_rmdir_cbk,
-  client_symlink_cbk,
-  client_rename_cbk,
-  client_link_cbk,
-  client_chmod_cbk,
-  client_chown_cbk,
-  client_truncate_cbk,
-  client_open_cbk,
-  client_readv_cbk,
-  client_write_cbk,
-  client_statfs_cbk,
-  client_flush_cbk,
-  client_close_cbk,
-  client_fsync_cbk,
-  client_setxattr_cbk,
-  client_getxattr_cbk,
-  client_removexattr_cbk,
-  client_opendir_cbk,
-  client_getdents_cbk,
-  client_closedir_cbk,
-  client_fsyncdir_cbk,
-  client_access_cbk,
-  client_create_cbk,
-  client_ftruncate_cbk,
-  client_fstat_cbk,
-  client_lk_cbk,
-  client_utimens_cbk,
-  client_fchmod_cbk,
-  client_fchown_cbk,
-  client_lookup_cbk,
-  client_forget_cbk,
-  client_setdents_cbk,
-  client_rmelem_cbk,
-  client_incver_cbk,
-  client_readdir_cbk,
-  client_checksum_cbk,
+	[GF_FOP_STAT]           =  client_stat_cbk,
+	[GF_FOP_READLINK]       =  client_readlink_cbk,
+	[GF_FOP_MKNOD]          =  client_mknod_cbk,
+	[GF_FOP_MKDIR]          =  client_mkdir_cbk,
+	[GF_FOP_UNLINK]         =  client_unlink_cbk,
+	[GF_FOP_RMDIR]          =  client_rmdir_cbk,
+	[GF_FOP_SYMLINK]        =  client_symlink_cbk,
+	[GF_FOP_RENAME]         =  client_rename_cbk,
+	[GF_FOP_LINK]           =  client_link_cbk,
+	[GF_FOP_CHMOD]          =  client_chmod_cbk,
+	[GF_FOP_CHOWN]          =  client_chown_cbk,
+	[GF_FOP_TRUNCATE]       =  client_truncate_cbk,
+	[GF_FOP_OPEN]           =  client_open_cbk,
+	[GF_FOP_READ]           =  client_readv_cbk,
+	[GF_FOP_WRITE]          =  client_write_cbk,
+	[GF_FOP_STATFS]         =  client_statfs_cbk,
+	[GF_FOP_FLUSH]          =  client_flush_cbk,
+	[GF_FOP_FSYNC]          =  client_fsync_cbk,
+	[GF_FOP_SETXATTR]       =  client_setxattr_cbk,
+	[GF_FOP_GETXATTR]       =  client_getxattr_cbk,
+	[GF_FOP_REMOVEXATTR]    =  client_removexattr_cbk,
+	[GF_FOP_OPENDIR]        =  client_opendir_cbk,
+	[GF_FOP_GETDENTS]       =  client_getdents_cbk,
+	[GF_FOP_FSYNCDIR]       =  client_fsyncdir_cbk,
+	[GF_FOP_ACCESS]         =  client_access_cbk,
+	[GF_FOP_CREATE]         =  client_create_cbk,
+	[GF_FOP_FTRUNCATE]      =  client_ftruncate_cbk,
+	[GF_FOP_FSTAT]          =  client_fstat_cbk,
+	[GF_FOP_LK]             =  client_lk_common_cbk,
+	[GF_FOP_UTIMENS]        =  client_utimens_cbk,
+	[GF_FOP_FCHMOD]         =  client_fchmod_cbk,
+	[GF_FOP_FCHOWN]         =  client_fchown_cbk,
+	[GF_FOP_LOOKUP]         =  client_lookup_cbk,
+	[GF_FOP_SETDENTS]       =  client_setdents_cbk,
+	[GF_FOP_READDIR]        =  client_readdir_cbk,
+	[GF_FOP_INODELK]        =  client_inodelk_cbk,
+	[GF_FOP_FINODELK]       =  client_finodelk_cbk,
+	[GF_FOP_ENTRYLK]        =  client_entrylk_cbk,
+	[GF_FOP_FENTRYLK]       =  client_fentrylk_cbk,
+	[GF_FOP_CHECKSUM]       =  client_checksum_cbk,
+	[GF_FOP_XATTROP]        =  client_xattrop_cbk,
+	[GF_FOP_FXATTROP]       =  client_fxattrop_cbk,
 };
 
 static gf_op_t gf_mops[] = {
-  client_setvolume_cbk,
-  client_getvolume_cbk,
-  client_stats_cbk,
-  client_setspec_cbk,
-  client_getspec_cbk,
-  client_lock_cbk,
-  client_unlock_cbk,
-  client_listlocks_cbk,
-  client_fsck_cbk,
+	[GF_MOP_SETVOLUME]        =  client_setvolume_cbk,
+	[GF_MOP_GETVOLUME]        =  client_enosys_cbk,
+	[GF_MOP_STATS]            =  client_stats_cbk,
+	[GF_MOP_SETSPEC]          =  client_setspec_cbk,
+	[GF_MOP_GETSPEC]          =  client_getspec_cbk,
+};
+
+static gf_op_t gf_cbks[] = {
+	[GF_CBK_FORGET]           = client_forget_cbk,
+	[GF_CBK_RELEASE]          = client_release_cbk,
+	[GF_CBK_RELEASEDIR]       = client_releasedir_cbk
 };
 
 /*
@@ -4911,59 +5878,68 @@ static gf_op_t gf_mops[] = {
  * @blk: data block
  *
  */
-static int32_t
-client_protocol_interpret (transport_t *trans,
-			   gf_block_t *blk)
+int
+protocol_client_interpret (xlator_t *this, transport_t *trans,
+                           char *hdr_p, size_t hdrlen,
+                           char *buf_p, size_t buflen)
 {
-  int32_t ret = 0;
-  dict_t *args = blk->dict;
-  dict_t *refs = NULL;
-  call_frame_t *frame = NULL;
+	int ret = -1;
+	call_frame_t *frame = NULL;
+	gf_hdr_common_t *hdr = NULL;
+	uint64_t callid = 0;
+	int type = -1;
+	int op = -1;
 
-  frame = lookup_frame (trans, blk->callid);
-  if (!frame) {
-    gf_log (trans->xl->name, GF_LOG_WARNING,
-	    "frame not found for blk with callid: %d",
-	    blk->callid);
-    return -1;
-  }
-  frame->root->rsp_refs = refs = dict_ref (get_new_dict ());
-  dict_set (refs, NULL, trans->buf);
-  refs->is_locked = 1;
 
-  switch (blk->type) {
-  case GF_OP_TYPE_FOP_REPLY:
-    {
-      if (blk->op > GF_FOP_MAXVALUE || blk->op < 0) {
-	gf_log (trans->xl->name, GF_LOG_WARNING,
-		"invalid opcode '%d'", blk->op);
-	ret = -1;
-	break;
-      }
-      
-      gf_fops[blk->op] (frame, args);
-      
-      break;
-    }
-  case GF_OP_TYPE_MOP_REPLY:
-    {
-      if (blk->op > GF_MOP_MAXVALUE || blk->op < 0)
-	return -1;
-      
-      gf_mops[blk->op] (frame, args);
-     
-      break;
-    }
-  default:
-    gf_log (trans->xl->name, GF_LOG_WARNING,
-	    "invalid packet type: %d", blk->type);
-    ret = -1;
-  }
+	hdr  = (gf_hdr_common_t *)hdr_p;
 
-  dict_destroy (args);
-  if (refs)
-    dict_unref (refs);
-  return 0;
+	type   = ntoh32 (hdr->type);
+	op     = ntoh32 (hdr->op);
+	callid = ntoh64 (hdr->callid);
+
+	frame  = lookup_frame (trans, op, type, callid);
+	if (frame == NULL) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"no frame for callid=%"PRId64" type=%d op=%d",
+			callid, type, op);
+		return 0;
+	}
+
+	switch (type) {
+	case GF_OP_TYPE_FOP_REPLY:
+		if ((op > GF_FOP_MAXVALUE) || 
+		    (op < 0)) {
+			gf_log (trans->xl->name, GF_LOG_WARNING,
+				"invalid fop '%d'", op);
+		} else {
+			ret = gf_fops[op] (frame, hdr, hdrlen, buf_p, buflen);
+		}
+		break;
+	case GF_OP_TYPE_MOP_REPLY:
+		if ((op > GF_MOP_MAXVALUE) || 
+		    (op < 0)) {
+			gf_log (trans->xl->name, GF_LOG_WARNING,
+				"invalid fop '%d'", op);
+		} else {
+			ret = gf_mops[op] (frame, hdr, hdrlen, buf_p, buflen);
+		}
+		break;
+	case GF_OP_TYPE_CBK_REPLY:
+		if ((op > GF_CBK_MAXVALUE) || 
+		    (op < 0)) {
+			gf_log (trans->xl->name, GF_LOG_WARNING,
+				"invalid cbk '%d'", op);
+		} else {
+			ret = gf_cbks[op] (frame, hdr, hdrlen, buf_p, buflen);
+		}
+		break;
+	default:
+		gf_log (trans->xl->name, GF_LOG_ERROR,
+			"invalid packet type: %d", type);
+		break;
+	}
+
+	return ret;
 }
 
 /*
@@ -4971,97 +5947,125 @@ client_protocol_interpret (transport_t *trans,
  * @this:
  *
  */
-int32_t 
+int32_t
 init (xlator_t *this)
 {
-  transport_t *trans = NULL;
-  client_proto_priv_t *priv = NULL;
-  struct rlimit lim;
-  data_t *timeout = NULL;
-  int32_t transport_timeout = 0;
-  data_t *max_block_size_data = NULL;
+	transport_t *trans = NULL;
+	client_private_t *priv = NULL;
+	client_connection_private_t *cprivate = NULL;
+	int32_t transport_timeout = 0;
+	data_t *remote_subvolume = NULL;
+	int32_t ret = -1;
 
-  if (this->children) {
-    gf_log (this->name, 
-	    GF_LOG_ERROR,
-	    "FATAL: client protocol translator cannot have subvolumes");
-    return -1;
-  }
+	if (this->children) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"FATAL: client protocol translator cannot have "
+			"subvolumes");
+		goto out;
+	}
+	
+	if (!this->parents) {
+		gf_log (this->name, GF_LOG_WARNING,
+			"dangling volume. check volfile ");
+	}
 
-  if (!dict_get (this->options, "transport-type")) {
-    gf_log (this->name, GF_LOG_DEBUG,
-	    "missing 'option transport-type'. defaulting to \"tcp/client\"");
-    dict_set (this->options,
-	      "transport-type",
-	      str_to_data ("tcp/client"));
-  }
+	remote_subvolume = dict_get (this->options, "remote-subvolume");
+	if (remote_subvolume == NULL) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"missing 'option remote-subvolume'.");
+		goto out;
+	}
 
-  if (!dict_get (this->options, "remote-subvolume")) {
-    gf_log (this->name, GF_LOG_ERROR,
-	    "missing 'option remote-subvolume'.");
-    return -1;
-  }
-  
-  timeout = dict_get (this->options, "transport-timeout");
-  if (timeout) {
-    transport_timeout = data_to_int32 (timeout);
-    gf_log (this->name, GF_LOG_DEBUG,
-	    "setting transport-timeout to %d", transport_timeout);
-  }
-  else {
-    gf_log (this->name, GF_LOG_DEBUG,
-	    "defaulting transport-timeout to 42");
-    transport_timeout = 42;
-  }
+	ret = dict_get_int32 (this->options, "transport-timeout", 
+			      &transport_timeout);
+	if (ret >= 0) {
+		gf_log (this->name, GF_LOG_DEBUG,
+			"setting transport-timeout to %d", transport_timeout);
+	} else {
+		gf_log (this->name, GF_LOG_DEBUG,
+			"defaulting transport-timeout to 42");
+		transport_timeout = 42;
+	}
+	
+	trans = transport_load (this->options, this);
+	if (trans == NULL) {
+		gf_log (this->name, GF_LOG_ERROR, 
+			"Failed to load transport");
+		ret = -1;
+		goto out;
+	}
 
-  trans = transport_load (this->options, this, this->notify);
+	priv = CALLOC (1, sizeof (client_private_t));
 
-  if (!trans) {
-    gf_log (this->name, GF_LOG_ERROR, "Failed to load transport");
-    return -1;
-  }
+	priv->transport = transport_ref (trans);
+	
+	LOCK_INIT (&priv->forget.lock);
 
-  this->private = transport_ref (trans);
-  priv = calloc (1, sizeof (client_proto_priv_t));
-  priv->saved_frames = get_new_dict_full (1024);
-  priv->saved_fds = get_new_dict_full (64);
-  priv->callid = 1;
-  memset (&(priv->last_sent), 0, sizeof (priv->last_sent));
-  memset (&(priv->last_recieved), 0, sizeof (priv->last_recieved));
-  priv->transport_timeout = transport_timeout;
-  pthread_mutex_init (&priv->lock, NULL);
+	this->private = priv;
+	
+	/* in case, GF_VALIDATE_OR_GOTO() jumps to label */
+	ret = -1;
 
-  max_block_size_data = dict_get (this->options, "limits.transaction-size");
+	cprivate = CALLOC (1, sizeof (client_connection_private_t));
+	GF_VALIDATE_OR_GOTO(this->name, cprivate, out);
 
-  if (max_block_size_data) {
-    priv->max_block_size = gf_str_to_long_long (max_block_size_data->data);
-  } else {
-    gf_log (this->name, GF_LOG_DEBUG,
-	    "defaulting limits.transaction-size to %d", DEFAULT_BLOCK_SIZE);
-    priv->max_block_size = DEFAULT_BLOCK_SIZE;
-  }
-    
-  trans->xl_private = priv;
+	cprivate->saved_frames = saved_frames_new ();
+	GF_VALIDATE_OR_GOTO(this->name, cprivate->saved_frames, out);
+
+	cprivate->saved_fds = get_new_dict_full (64);
+	GF_VALIDATE_OR_GOTO(this->name, cprivate->saved_fds, out);
+
+	cprivate->callid = 1;
+
+	memset (&(cprivate->last_sent), 0, 
+		sizeof (cprivate->last_sent));
+
+	memset (&(cprivate->last_received), 0, 
+		sizeof (cprivate->last_received));
+
+	cprivate->transport_timeout = transport_timeout;
+
+	/* Set the slow transport timeout to 3 times the original value 
+	   or at least 300seconds */
+	cprivate->slow_transport_timeout = transport_timeout * 3;
+	if (cprivate->slow_transport_timeout < 300)
+		cprivate->slow_transport_timeout = 300;
+
+	pthread_mutex_init (&cprivate->lock, NULL);
+
+	trans->xl_private = cprivate;
 
 #ifndef GF_DARWIN_HOST_OS
-  lim.rlim_cur = 1048576;
-  lim.rlim_max = 1048576;
+	{
+		struct rlimit lim;
 
-  if (setrlimit (RLIMIT_NOFILE, &lim) == -1) {
-    gf_log (this->name, GF_LOG_WARNING, "WARNING: Failed to set 'ulimit -n 1048576': %s",
-	    strerror(errno));
-    lim.rlim_cur = 65536;
-    lim.rlim_max = 65536;
-  
-    if (setrlimit (RLIMIT_NOFILE, &lim) == -1) {
-      gf_log (this->name, GF_LOG_ERROR, "Failed to set max open fd to 64k: %s", strerror(errno));
-    } else {
-      gf_log (this->name, GF_LOG_ERROR, "max open fd set to 64k");
-    }
-  }
+		lim.rlim_cur = 1048576;
+		lim.rlim_max = 1048576;
+		
+		ret = setrlimit (RLIMIT_NOFILE, &lim);
+		if (ret == -1) {
+			gf_log (this->name, GF_LOG_WARNING,
+				"WARNING: Failed to set 'ulimit -n 1M': %s",
+				strerror(errno));
+			lim.rlim_cur = 65536;
+			lim.rlim_max = 65536;
+			
+			ret = setrlimit (RLIMIT_NOFILE, &lim);
+			if (ret == -1) {
+				gf_log (this->name, GF_LOG_ERROR,
+					"Failed to set max open fd to 64k: %s",
+					strerror(errno));
+			} else {
+				gf_log (this->name, GF_LOG_ERROR,
+					"max open fd set to 64k");
+			}
+
+		}
+	}
 #endif
-
-  return 0;
+	ret = 0;
+out:
+	return ret;
 }
 
 /*
@@ -5072,165 +6076,137 @@ init (xlator_t *this)
 void
 fini (xlator_t *this)
 {
-  /* TODO: Check if its enough.. how to call transport's fini () */
-  client_proto_priv_t *priv = this->private;
+	/* TODO: Check if its enough.. how to call transport's fini () */
+	client_private_t *priv = NULL;
+	client_connection_private_t *cprivate = NULL;
 
-  dict_destroy (priv->saved_frames);
-  dict_destroy (priv->saved_fds);
-  free (priv);
-  return;
-}
+	priv = this->private;
+	this->private = NULL;
 
+	if (priv) {
+		if (priv->transport && priv->transport->xl_private) {
+			cprivate = priv->transport->xl_private;
+			dict_destroy (cprivate->saved_fds);
+			FREE (cprivate);
+		}
+		if (priv->transport)
+			transport_unref (priv->transport);
 
-static int32_t
-client_protocol_handshake_reply (transport_t *trans,
-				 gf_block_t *blk)
-{
-  client_proto_priv_t *priv = trans->xl_private;
-  dict_t *reply = NULL;
-  char *remote_error;
-  int32_t remote_errno;
-  int32_t ret = -1;
-
-  do {
-    if (!blk) {
-      gf_log (trans->xl->name, GF_LOG_ERROR,
-	      "gf_block_unserialize failed during handshake");
-      break;
-    }
-
-    gf_log (trans->xl->name, GF_LOG_DEBUG,
-	    "reply frame has callid: %lld", blk->callid);
-
-    reply = blk->dict;
-
-    if (reply == NULL) {
-      gf_log (trans->xl->name, GF_LOG_ERROR,
-	      "dict_unserialize failed");
-      ret = -1;
-      break;
-    }
-  } while (0);
-
-  if (dict_get (reply, "RET"))
-    ret = data_to_int32 (dict_get (reply, "RET"));
-  else
-    ret = -2;
-
-  if (dict_get (reply, "ERRNO"))
-    remote_errno = data_to_int32 (dict_get (reply, "ERRNO"));
-  else
-    remote_errno = ENOENT;
-
-  if (dict_get (reply, "ERROR"))
-    remote_error = data_to_str (dict_get (reply, "ERROR"));
-  else
-    remote_error = "Unknown Error";
-
-  if (ret < 0) {
-    gf_log (trans->xl->name, GF_LOG_ERROR,
-	    "SETVOLUME on remote-host failed: ret=%d error=%s",
-	    ret,  remote_error);
-    errno = remote_errno;
-  } else {
-    gf_log (trans->xl->name, GF_LOG_DEBUG,
-	    "SETVOLUME on remote-host succeeded");
-  }
-
-  if (reply)
-    dict_destroy (reply);
-
-    if (!ret) {
-      pthread_mutex_lock (&(priv->lock));
-      {
-	priv->connected = 1;
-      }
-      pthread_mutex_unlock (&(priv->lock));
-    }
-    
-    {
-      xlator_list_t *parent = trans->xl->parents;
-      while (parent) 
-	{
-	  parent->xlator->notify (parent->xlator, 
-				  GF_EVENT_CHILD_UP, 
-				  trans->xl);
-	  parent = parent->next;
+		LOCK_DESTROY (&priv->forget.lock);
+		FREE (priv);
 	}
-    }
-  return ret;
+	return;
 }
 
 
-static int32_t
-client_protocol_handshake (xlator_t *this,
-			   transport_t *trans)
+int
+protocol_client_handshake (xlator_t *this,
+                           transport_t *trans)
 {
-  int32_t ret;
-  client_proto_priv_t *priv;
-  dict_t *request;
-  dict_t *options;
+	gf_hdr_common_t        *hdr = NULL;
+	gf_mop_setvolume_req_t *req = NULL;
+	dict_t                 *options = NULL;
+	int32_t                 ret = -1;
+	int                     hdrlen = 0;
+	int                     dict_len = 0;
+	call_frame_t           *fr = NULL;
 
-  priv = trans->xl_private;
-  options = this->options;
-  
-  {
-    struct timeval timeout;
-    timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
-    if (!priv->timer)
-      priv->timer = gf_timer_call_after (trans->xl->ctx,
-					 timeout,
-					 call_bail,
-					 (void *)trans);
-    else
-      gf_log (this->name,
-	      GF_LOG_DEBUG,
-	      "timer is already registered!!!!");
-    
-    if (!priv->timer) {
-      gf_log (this->name,
-	      GF_LOG_DEBUG,
-	      "timer creation failed");
-    }
-  }
+	options = this->options;
+	ret = dict_set_str (options, "version", PACKAGE_VERSION);
+	if (ret < 0) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to set version(%s) in options dictionary",
+			PACKAGE_VERSION);
+	}
 
-  request = dict_copy (options, NULL);
-  dict_set (request,
-	    "version",
-	    data_from_dynstr (strdup (PACKAGE_VERSION)));
+	dict_len = dict_serialized_length (options);
+	if (dict_len < 0) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to get serialized length of dict(%p)",
+			options);
+		ret = dict_len;
+		goto fail;
+	}
 
+	hdrlen = gf_hdr_len (req, dict_len);
+	hdr    = gf_hdr_new (req, dict_len);
+	GF_VALIDATE_OR_GOTO(this->name, hdr, fail);
 
-  {
-    struct iovec *vector;
-    int32_t i;
-    int32_t count;
+	req    = gf_param (hdr);
 
-    gf_block_t *blk = gf_block_new (424242); /* "random" number */
-    blk->type = GF_OP_TYPE_MOP_REQUEST;
-    blk->op = GF_MOP_SETVOLUME;
-    blk->size = 0;
-    blk->data = 0;
-    blk->dict = request;
+	ret = dict_serialize (options, req->buf);
+	if (ret < 0) {
+		gf_log (this->name, GF_LOG_ERROR,
+			"failed to serialize dictionary(%p)",
+			options);
+		goto fail;
+	}
+	req->dict_len = hton32 (dict_len);
+	fr  = create_frame (this, this->ctx->pool);
+	GF_VALIDATE_OR_GOTO(this->name, fr, fail);
 
-    count = gf_block_iovec_len (blk);
-    vector = alloca (count * (sizeof (*vector)));
-    memset (vector, 0, count * (sizeof (*vector)));
-
-    gf_block_to_iovec (blk, vector, count);
-    for (i=0; i<count; i++)
-      if (!vector[i].iov_base)
-        vector[i].iov_base = alloca (vector[i].iov_len);
-    gf_block_to_iovec (blk, vector, count);
-
-    ret = trans->ops->writev (trans, vector, count);
-
-    free (blk);
-  }
-  dict_destroy (request);
-
-  return ret;
+	ret = protocol_client_xfer (fr, this,
+				    GF_OP_TYPE_MOP_REQUEST, GF_MOP_SETVOLUME,
+				    hdr, hdrlen, NULL, 0, NULL);
+	return ret;
+fail:
+	if (hdr)
+		free (hdr);
+	return ret;
 }
+
+
+int
+protocol_client_pollout (xlator_t *this, transport_t *trans)
+{
+	client_connection_private_t *cprivate = NULL;
+
+	cprivate = trans->xl_private;
+
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		gettimeofday (&cprivate->last_sent, NULL);
+	}
+	pthread_mutex_unlock (&cprivate->lock);
+
+	return 0;
+}
+
+
+int
+protocol_client_pollin (xlator_t *this, transport_t *trans)
+{
+	client_connection_private_t *cprivate = NULL;
+	int ret = -1;
+	char *buf = NULL;
+	size_t buflen = 0;
+	char *hdr = NULL;
+	size_t hdrlen = 0;
+	int connected = 0;
+
+	cprivate = trans->xl_private;
+
+	pthread_mutex_lock (&cprivate->lock);
+	{
+		gettimeofday (&cprivate->last_received, NULL);
+		connected = cprivate->connected;
+	}
+	pthread_mutex_unlock (&cprivate->lock);
+
+	ret = transport_receive (trans, &hdr, &hdrlen, &buf, &buflen);
+
+	if (ret == 0)
+	{
+		ret = protocol_client_interpret (this, trans, hdr, hdrlen,
+						 buf, buflen);
+	}
+
+	/* TODO: use mem-pool */
+	FREE (hdr);
+
+	return ret;
+}
+
 
 /*
  * client_protocol_notify - notify function for client protocol
@@ -5242,197 +6218,221 @@ client_protocol_handshake (xlator_t *this,
 
 int32_t
 notify (xlator_t *this,
-	int32_t event,
-	void *data,
-	...)
+        int32_t event,
+        void *data,
+        ...)
 {
-  int ret = 0;
+	int ret = -1;
+	transport_t *trans = NULL;
+	client_connection_private_t *cprivate = NULL;
 
-  switch (event)
-    {
-    case GF_EVENT_POLLIN:
-      {
-	transport_t *trans = data;
-	client_proto_priv_t *priv = trans->xl_private;
-	gf_block_t *blk;
-	int32_t connected = 0;
+	trans = data;
 
-	blk = gf_block_unserialize_transport (trans, priv->max_block_size);
-	if (!blk) {
-	  ret = -1;
-	}
-
-	if (!ret) {
-	  pthread_mutex_lock (&(priv->lock));
-	  {
-	    connected = priv->connected;
-	    if (connected)
-	      gettimeofday (&(priv->last_recieved), NULL);
-	  }
-	  pthread_mutex_unlock (&(priv->lock));
-
-	  if (connected) 
-	    ret = client_protocol_interpret (trans, blk);
-	  else
-	    ret = client_protocol_handshake_reply (trans, blk);
-
-	  if (!ret) {
-	    free (blk);
-	    break;
-	  }
-	} 
-      }
-      /* no break for ret check to happen below */
-    case GF_EVENT_POLLERR:
-      {
-	transport_t *trans = data;
-	ret = -1;
-	client_protocol_cleanup (trans); 
-	transport_disconnect (trans);
-      }
-      client_proto_priv_t *priv = ((transport_t *)data)->xl_private;
-
-      if (priv->connected) {
-	transport_t *trans = data;
-	struct timeval tv = {0, 0};
-	client_proto_priv_t *priv = trans->xl_private;
-
-	if (this->parents) 
-	  {
-	    xlator_list_t *parent = this->parents;
-	    while (parent) 
-	      {
-		parent->xlator->notify (parent->xlator, GF_EVENT_CHILD_DOWN, this);
-		parent = parent->next;
-	      }
-	  }
-
-	priv->n_minus_1 = 0;
-	priv->n = 1;
-
-	pthread_mutex_lock (&priv->lock);
+	switch (event) {
+	case GF_EVENT_POLLOUT:
 	{
-	  if (!priv->reconnect)
-	    priv->reconnect = gf_timer_call_after (trans->xl->ctx, tv,
-						   client_protocol_reconnect,
-						   trans);
+		ret = protocol_client_pollout (this, trans);
 
-	  priv->connected = 0;
+		break;
 	}
-	pthread_mutex_unlock (&priv->lock);
+	case GF_EVENT_POLLIN:
+	{
+		ret = protocol_client_pollin (this, trans);
 
-      }
-      break;
-
-    case GF_EVENT_PARENT_UP:
-      {
-	transport_t *trans = this->private;
-	if (!trans) {
-	  gf_log (this->name,
-		  GF_LOG_DEBUG,
-		  "transport init failed");
-	  return -1;
+		break;
 	}
-	client_proto_priv_t *priv = trans->xl_private;
-	struct timeval tv = {0, 0};
-
-	gf_log (this->name, GF_LOG_DEBUG,
-		"got GF_EVENT_PARENT_UP, attempting connect on transport");
-
-	//	ret = transport_connect (trans);
-
-	priv->n_minus_1 = 0;
-	priv->n = 1;
-	priv->reconnect = gf_timer_call_after (trans->xl->ctx, tv,
-					       client_protocol_reconnect,
-					       trans);
-
-	if (ret) {
-	  /* TODO: schedule reconnection with timer */
+	/* no break for ret check to happen below */
+	case GF_EVENT_POLLERR:
+	{
+		ret = -1;
+		protocol_client_cleanup (trans);
 	}
-      }
-      break;
 
-    case GF_EVENT_CHILD_UP:
-      {
-	transport_t *trans = data;
-	data_t *handshake = dict_get (this->options, "disable-handshake");
+	cprivate = trans->xl_private;
+	if (cprivate->connected) {
+		struct timeval tv = {0, 0};
+		xlator_list_t *parent = NULL;
 
-	gf_log (this->name, GF_LOG_DEBUG,
-		"got GF_EVENT_CHILD_UP");
-	if (!handshake || 
-	    (strcasecmp (data_to_str (handshake), "on"))) {
-	  ret = client_protocol_handshake (this, trans);
-	} else {
-	  ((client_proto_priv_t *)trans->xl_private)->connected = 1;
-	}	  
+		parent = this->parents;
+		while (parent) {
+			parent->xlator->notify (parent->xlator,
+						GF_EVENT_CHILD_DOWN,
+						this);
+			parent = parent->next;
+		}
 
-	if (ret) {
-	  transport_disconnect (trans);
+		pthread_mutex_lock (&cprivate->lock);
+		{
+			cprivate->connected = 0;
+			if (cprivate->reconnect == 0)
+				cprivate->reconnect = 
+					gf_timer_call_after (trans->xl->ctx, 
+							     tv,
+							     client_protocol_reconnect,
+							     trans);
+		}
+		pthread_mutex_unlock (&cprivate->lock);
+
 	}
-      }
-      break;
+	break;
 
-    default:
-      gf_log (this->name, GF_LOG_DEBUG,
-	      "got %d, calling default_notify ()", event);
+	case GF_EVENT_PARENT_UP:
+	{
+		struct timeval tv = {0, 0};
+		xlator_list_t *parent = NULL;
+		client_private_t *priv = this->private;
+		transport_t *trans = priv->transport;
 
-      default_notify (this, event, data);
-      break;
-    }
+		if (!trans) {
+			gf_log (this->name, GF_LOG_DEBUG,
+				"transport init failed");
+			return -1;
+		}
 
-  return ret;
+		cprivate = trans->xl_private;
+
+		gf_log (this->name, GF_LOG_DEBUG,
+			"got GF_EVENT_PARENT_UP, attempting connect "
+			"on transport");
+
+		cprivate->reconnect = 
+			gf_timer_call_after (trans->xl->ctx, tv,
+					     client_protocol_reconnect,
+					     trans);
+
+		if (ret) {
+			/* TODO: schedule reconnection with timer */
+		}
+
+		/* Let the connection/re-connection happen in 
+		 * background, for now, don't hang here,
+		 * tell the parents that i am all ok..
+		 */
+		parent = trans->xl->parents;
+		while (parent) {
+			parent->xlator->notify (parent->xlator,
+						GF_EVENT_CHILD_CONNECTING,
+						trans->xl);
+			parent = parent->next;
+		}
+	}
+	break;
+
+	case GF_EVENT_CHILD_UP:
+	{
+		char *handshake = NULL;
+
+		ret = dict_get_str (this->options, "disable-handshake", 
+				    &handshake);
+		gf_log (this->name, GF_LOG_DEBUG, 
+			"got GF_EVENT_CHILD_UP");
+		if ((ret < 0) ||
+		    (strcasecmp (handshake, "on"))) {
+			ret = protocol_client_handshake (this, trans);
+		} else {
+			cprivate = trans->xl_private;
+			cprivate->connected = 1;
+			ret = default_notify (this, event, trans);
+		}
+
+		if (ret)
+			transport_disconnect (trans);
+
+	}
+	break;
+
+	default:
+		gf_log (this->name, GF_LOG_DEBUG,
+			"got %d, calling default_notify ()", event);
+
+		default_notify (this, event, data);
+		break;
+	}
+
+	return ret;
 }
 
 
 struct xlator_fops fops = {
-  .stat        = client_stat,
-  .readlink    = client_readlink,
-  .mknod       = client_mknod,
-  .mkdir       = client_mkdir,
-  .unlink      = client_unlink,
-  .rmdir       = client_rmdir,
-  .rmelem      = client_rmelem,
-  .symlink     = client_symlink,
-  .rename      = client_rename,
-  .link        = client_link,
-  .chmod       = client_chmod,
-  .chown       = client_chown,
-  .truncate    = client_truncate,
-  .utimens     = client_utimens,
-  .open        = client_open,
-  .readv       = client_readv,
-  .writev      = client_writev,
-  .statfs      = client_statfs,
-  .flush       = client_flush,
-  .close       = client_close,
-  .fsync       = client_fsync,
-  .incver      = client_incver,
-  .setxattr    = client_setxattr,
-  .getxattr    = client_getxattr,
-  .removexattr = client_removexattr,
-  .opendir     = client_opendir,
-  .readdir     = client_readdir,
-  .closedir    = client_closedir,
-  .fsyncdir    = client_fsyncdir,
-  .access      = client_access,
-  .ftruncate   = client_ftruncate,
-  .fstat       = client_fstat,
-  .create      = client_create,
-  .lk          = client_lk,
-  .lookup      = client_lookup,
-  .forget      = client_forget,
-  .fchmod      = client_fchmod,
-  .fchown      = client_fchown,
-  .setdents    = client_setdents,
-  .getdents    = client_getdents,
-  .checksum    = client_checksum,
+	.stat        = client_stat,
+	.readlink    = client_readlink,
+	.mknod       = client_mknod,
+	.mkdir       = client_mkdir,
+	.unlink      = client_unlink,
+	.rmdir       = client_rmdir,
+	.symlink     = client_symlink,
+	.rename      = client_rename,
+	.link        = client_link,
+	.chmod       = client_chmod,
+	.chown       = client_chown,
+	.truncate    = client_truncate,
+	.utimens     = client_utimens,
+	.open        = client_open,
+	.readv       = client_readv,
+	.writev      = client_writev,
+	.statfs      = client_statfs,
+	.flush       = client_flush,
+	.fsync       = client_fsync,
+	.setxattr    = client_setxattr,
+	.getxattr    = client_getxattr,
+	.removexattr = client_removexattr,
+	.opendir     = client_opendir,
+	.readdir     = client_readdir,
+	.fsyncdir    = client_fsyncdir,
+	.access      = client_access,
+	.ftruncate   = client_ftruncate,
+	.fstat       = client_fstat,
+	.create      = client_create,
+	.lk          = client_lk,
+	.inodelk     = client_inodelk,
+	.finodelk    = client_finodelk,
+	.entrylk     = client_entrylk,
+	.fentrylk    = client_fentrylk,
+	.lookup      = client_lookup,
+	.fchmod      = client_fchmod,
+	.fchown      = client_fchown,
+	.setdents    = client_setdents,
+	.getdents    = client_getdents,
+	.checksum    = client_checksum,
+	.xattrop     = client_xattrop,
+	.fxattrop    = client_fxattrop,
 };
 
 struct xlator_mops mops = {
-  .stats     = client_stats,
-  .lock      = client_lock,
-  .unlock    = client_unlock,
-  .listlocks = client_listlocks,
-  .getspec   = client_getspec,
+	.stats     = client_stats,
+	.getspec   = client_getspec,
+};
+
+struct xlator_cbks cbks = {
+	.forget     = client_forget,
+	.release    = client_release,
+	.releasedir = client_releasedir
+};
+
+
+struct volume_options options[] = {
+ 	{ .key   = {"username"}, 
+	  .type  = GF_OPTION_TYPE_ANY 
+	},
+ 	{ .key   = {"password"}, 
+	  .type  = GF_OPTION_TYPE_ANY 
+	},
+ 	{ .key   = {"transport-type"}, 
+	  .value = {"tcp", "socket", "ib-verbs", "unix", "ib-sdp", 
+		    "tcp/client", "ib-verbs/client"},
+	  .type  = GF_OPTION_TYPE_STR 
+	},
+ 	{ .key   = {"remote-host"}, 
+	  .type  = GF_OPTION_TYPE_ANY 
+	},
+ 	{ .key   = {"remote-subvolume"}, 
+	  .type  = GF_OPTION_TYPE_ANY 
+	},
+ 	{ .key   = {"transport-timeout"}, 
+	  .type  = GF_OPTION_TYPE_TIME, 
+	  .min   = 5, 
+	  .max   = 1013, 
+	}, 
+
+	{ .key   = {NULL} },
 };

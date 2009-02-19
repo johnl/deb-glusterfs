@@ -31,10 +31,10 @@ struct sched_ops {
   int32_t (*init) (xlator_t *this);
   void (*fini) (xlator_t *this);
   void (*update) (xlator_t *this);
-  xlator_t *(*schedule) (xlator_t *this, void *path);
+  xlator_t *(*schedule) (xlator_t *this, const void *path);
   void (*notify) (xlator_t *xl, int32_t event, void *data);
 };
 
-extern struct sched_ops *get_scheduler (const char *name);
+extern struct sched_ops *get_scheduler (xlator_t *xl, const char *name);
 
 #endif /* _SCHEDULER_H */

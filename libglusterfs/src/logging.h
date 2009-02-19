@@ -27,12 +27,52 @@
 #endif
 
 #include <stdint.h>
+#include <stdio.h>  
+
+#define GF_PRI_FSBLK       PRId64
+#define GF_PRI_BLKSIZE     "ld"
+#if GF_LINUX_HOST_OS
+
+#  if __WORDSIZE == 64
+#    define GF_PRI_SIZET   "lu"
+#    define GF_PRI_NLINK   "lu"
+#  else
+#    define GF_PRI_SIZET   "u"
+#    define GF_PRI_NLINK   "u"
+#  endif /* __WORDSIZE */
+
+#elif GF_DARWIN_HOST_OS
+
+/* Noticed that size_t and ino_t are different on OSX, need to fix the warnings */
+#  define GF_PRI_SIZET     "lu"
+#  define GF_PRI_NLINK     "u"
+
+#  undef GF_PRI_FSBLK
+#  define GF_PRI_FSBLK     "u"
+ 
+#  undef GF_PRI_BLKSIZE
+#  define GF_PRI_BLKSIZE   "u"
+
+#  if __DARWIN_64_BIT_INO_T == 0
+#    error '64 bit ino_t is must for GlusterFS to work, Compile with "CFLAGS=-D__DARWIN_64_BIT_INO_T"'
+#  endif /* __DARWIN_64_BIT_INO_T */
+
+#else /* !LINUX && !DARWIN */
+
+/* BSD and Solaris : Change as per testing there.. */
+#  define GF_PRI_SIZET     "lu"
+#  define GF_PRI_NLINK     "u"
+
+#endif /* LINUX_OS */
+
+#define GF_PRI_DEV         GF_PRI_FSBLK
 
 /* Replace gf_log with _GF_FORMAT_WARN during compile time and let gcc spit the format specificier warnings. Make sure you replace them back with gf_log call. */
 #define _GF_FORMAT_WARN(domain, loglevel, format, args...)  printf ("__DEBUG__" format, ##args);
 
 typedef enum {
   GF_LOG_NONE,
+  GF_LOG_TRACE,
   GF_LOG_CRITICAL,   /* fatal errors */
   GF_LOG_ERROR,      /* major failures (not necessarily fatal) */
   GF_LOG_WARNING,    /* info about normal operation */
@@ -44,18 +84,21 @@ typedef enum {
 
 extern gf_loglevel_t gf_log_loglevel;
 
-
-//#define GF_LOG_FORMAT_CHECK
-
-#ifdef GF_LOG_FORMAT_CHECK
-#define gf_log _GF_FORMAT_WARN
-#else
-#define gf_log(dom, levl, fmt...) do {                          \
-  if (levl <= gf_log_loglevel)                                  \
-  _gf_log (dom, __FILE__, __FUNCTION__, __LINE__, levl, ##fmt); \
+#define gf_log(dom, levl, fmt...) do {					\
+		if (levl <= gf_log_loglevel)				\
+			_gf_log (dom, __FILE__, __FUNCTION__, __LINE__, \
+				 levl, ##fmt);				\
+		if (0) {						\
+			printf (fmt);					\
+		}							\
 } while (0)
-#endif
 
+/* Log once in GF_UNIVERSAL_ANSWER times */
+#define GF_LOG_OCCASIONALLY(var, args...) if (!(var++%GF_UNIVERSAL_ANSWER)) { \
+                gf_log (args);                                                \
+        }
+
+			
 void 
 gf_log_logrotate (int signum);
 
@@ -69,35 +112,22 @@ _gf_log (const char *domain,
 int32_t 
 gf_log_init (const char *filename);
 
+void gf_log_lock (void);
+void gf_log_unlock (void);
+
 gf_loglevel_t 
 gf_log_get_loglevel (void);
 void 
 gf_log_set_loglevel (gf_loglevel_t level);
 
-/* Check if the condition is true and log and return -1 if it is */
-#define GF_ERROR_IF(cond) \
-do { \
-  if ((cond)) { \
-    gf_log ("ERROR", GF_LOG_ERROR, "%s: %s: (%s) is true", __FILE__, __FUNCTION__, #cond); \
-    errno = EINVAL; \
-    return -1; \
-  } \
-} while (0)
-
-/* Check if the condition is true and log if it is */
-#define GF_ERROR_NO_RETURN_IF(cond) \
-do { \
-  if ((cond)) { \
-    gf_log ("ERROR", GF_LOG_ERROR, "%s: %s: (%s) is true", __FILE__, __FUNCTION__, #cond); \
-  } \
-} while (0)
-
-#define GF_ERROR_IF_NULL(p) GF_ERROR_IF((p) == NULL)
-#define GF_ERROR_NO_RETURN_IF_NULL(p) GF_ERROR_NO_RETURN_IF((p) == NULL)
-#define GF_ERROR_NO_RETURN_IF_FALSE(p) GF_ERROR_NO_RETURN_IF((p) == 0)
-#define GF_BUG_ON(p) GF_ERROR_NO_RETURN_IF(p)
 #define GF_DEBUG(xl, format, args...) gf_log ((xl)->name, GF_LOG_DEBUG, format, ##args)
 #define GF_WARNING(xl, format, args...) gf_log ((xl)->name, GF_LOG_WARNING, format, ##args)
 #define GF_ERROR(xl, format, args...) gf_log ((xl)->name, GF_LOG_ERROR, format, ##args)
+
+#define GF_TRACE(xl, args...) \
+  do { \
+    if ((xl)->trace) \
+	    _gf_log ((xl)->name, __FILE__, __FUNCTION__, __LINE__, GF_LOG_TRACE, ##args); \
+  } while(0); \
 
 #endif /* __LOGGING_H__ */

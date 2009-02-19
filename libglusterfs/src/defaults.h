@@ -37,24 +37,9 @@ int32_t default_stats (call_frame_t *frame,
 		       xlator_t *this,
 		       int32_t flags);
 
-int32_t default_fsck (call_frame_t *frame,
-		      xlator_t *this,
-		      int32_t flags);
-
-int32_t default_lock (call_frame_t *frame,
-		      xlator_t *this,
-		      const char *name);
-
-int32_t default_unlock (call_frame_t *frame,
-			xlator_t *this,
-			const char *name);
-
-int32_t default_listlocks (call_frame_t *frame,
-			   xlator_t *this,
-			   const char *pattern);
-
 int32_t default_getspec (call_frame_t *frame,
 			 xlator_t *this,
+			 const char *key,
 			 int32_t flag);
 
 int32_t default_checksum (call_frame_t *frame,
@@ -68,10 +53,6 @@ int32_t default_lookup (call_frame_t *frame,
 			xlator_t *this,
 			loc_t *loc,
 			int32_t need_xattr);
-
-int32_t default_forget (call_frame_t *frame,
-			xlator_t *this,
-			inode_t *inode);
 
 int32_t default_stat (call_frame_t *frame,
 		      xlator_t *this,
@@ -147,14 +128,6 @@ int32_t default_rmdir (call_frame_t *frame,
 		       xlator_t *this,
 		       loc_t *loc);
 
-int32_t default_rmelem (call_frame_t *frame,
-			xlator_t *this,
-			const char *path);
-
-int32_t default_incver (call_frame_t *frame,
-			xlator_t *this,
-			const char *path);
-
 int32_t default_symlink (call_frame_t *frame,
 			 xlator_t *this,
 			 const char *linkpath,
@@ -167,8 +140,8 @@ int32_t default_rename (call_frame_t *frame,
 
 int32_t default_link (call_frame_t *frame,
 		      xlator_t *this,
-		      loc_t *loc,
-		      const char *newpath);
+		      loc_t *oldloc,
+		      loc_t *newloc);
 
 int32_t default_create (call_frame_t *frame,
 			xlator_t *this,
@@ -198,10 +171,6 @@ int32_t default_flush (call_frame_t *frame,
 		       xlator_t *this,
 		       fd_t *fd);
 
-int32_t default_close (call_frame_t *frame,
-		       xlator_t *this,
-		       fd_t *fd);
-
 int32_t default_fsync (call_frame_t *frame,
 		       xlator_t *this,
 		       fd_t *fd,
@@ -217,10 +186,6 @@ int32_t default_getdents (call_frame_t *frame,
 			  size_t size,
 			  off_t offset,
 			  int32_t flag);
-
-int32_t default_closedir (call_frame_t *frame,
-			  xlator_t *this,
-			  fd_t *fd);
 
 int32_t default_fsyncdir (call_frame_t *frame,
 			  xlator_t *this,
@@ -239,7 +204,8 @@ int32_t default_setxattr (call_frame_t *frame,
 
 int32_t default_getxattr (call_frame_t *frame,
 			  xlator_t *this,
-			  loc_t *loc);
+			  loc_t *loc,
+			  const char *name);
 
 int32_t default_removexattr (call_frame_t *frame,
 			     xlator_t *this,
@@ -251,6 +217,20 @@ int32_t default_lk (call_frame_t *frame,
 		    fd_t *fd,
 		    int32_t cmd,
 		    struct flock *flock);
+
+int32_t default_inodelk (call_frame_t *frame, xlator_t *this,
+			 loc_t *loc, int32_t cmd, struct flock *flock);
+
+int32_t default_finodelk (call_frame_t *frame, xlator_t *this,
+			  fd_t *fd, int32_t cmd, struct flock *flock);
+
+int32_t default_entrylk (call_frame_t *frame, xlator_t *this,
+			 loc_t *loc, const char *basename,
+			 entrylk_cmd cmd, entrylk_type type);
+
+int32_t default_fentrylk (call_frame_t *frame, xlator_t *this,
+			  fd_t *fd, const char *basename,
+			  entrylk_cmd cmd, entrylk_type type);
 
 int32_t default_readdir (call_frame_t *frame,
 			  xlator_t *this,
@@ -264,9 +244,30 @@ int32_t default_setdents (call_frame_t *frame,
 			  dir_entry_t *entries,
 			  int32_t count);
 
+int32_t default_xattrop (call_frame_t *frame,
+			 xlator_t *this,
+			 loc_t *loc,
+			 gf_xattrop_flags_t flags,
+			 dict_t *dict);
+
+int32_t default_fxattrop (call_frame_t *frame,
+			  xlator_t *this,
+			  fd_t *fd,
+			  gf_xattrop_flags_t flags,
+			  dict_t *dict);
+
 int32_t default_notify (xlator_t *this,
 			int32_t event,
 			void *data,
 			...);
+
+int32_t default_forget (xlator_t *this,
+			inode_t *inode);
+
+int32_t default_release (xlator_t *this,
+			 fd_t *fd);
+
+int32_t default_releasedir (xlator_t *this,
+			    fd_t *fd);
 
 #endif /* _DEFAULTS_H */

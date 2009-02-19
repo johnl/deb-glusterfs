@@ -1,8 +1,8 @@
-### file: client-volume.spec.sample
+### file: client-volume.vol.sample
 
-##############################################
-###  GlusterFS Client Volume Specification  ##
-##############################################
+#####################################
+###  GlusterFS Client Volume File  ##
+#####################################
 
 #### CONFIG FILE RULES:
 ### "#" is comment character.
@@ -17,33 +17,27 @@
 ### Add client feature and attach to remote subvolume
 volume client
   type protocol/client
-  option transport-type tcp/client     # for TCP/IP transport
+  option transport-type tcp
+# option transport-type unix
+# option transport-type ib-sdp
+# option transport-type ib-verbs
 # option ib-verbs-work-request-send-size  1048576
 # option ib-verbs-work-request-send-count 16
 # option ib-verbs-work-request-recv-size  1048576
 # option ib-verbs-work-request-recv-count 16
-# option transport-type ib-sdp/client  # for Infiniband transport
-# option transport-type ib-verbs/client # for ib-verbs transport 
   option remote-host 127.0.0.1         # IP address of the remote brick
 # option remote-port 6996              # default server port is 6996
-
 # option transport-timeout 30          # seconds to wait for a reply
                                        # from server for each request
   option remote-subvolume brick        # name of the remote volume
 end-volume
-
-### Add io-threads feature
-#volume iot
-#  type performance/io-threads
-#  subvolumes client
-#end-volume
 
 ### Add readahead feature
 #volume readahead
 #  type performance/read-ahead
 #  option page-size 1MB     # unit in bytes
 #  option page-count 2       # cache per file  = (page-count x page-size)
-#  subvolumes iot
+#  subvolumes client
 #end-volume
 
 ### Add IO-Cache feature
@@ -58,6 +52,7 @@ end-volume
 #volume writeback
 #  type performance/write-behind
 #  option aggregate-size 1MB
+#  option window-size 2MB
 #  option flush-behind off
 #  subvolumes iocache   
 #end-volume
