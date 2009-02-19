@@ -13,14 +13,18 @@ install/glusterfs-server::
 	   debian/tmp/etc/glusterfs/glusterfs-server.vol
 	ln -s glusterfs.8 debian/tmp/usr/share/man/man8/glusterfsd.8 
 
+install/glusterfs-client::
+	rm debian/tmp/usr/sbin/glusterfs
+	mv debian/tmp/usr/sbin/glusterfsd debian/tmp/usr/sbin/glusterfs
+
 install/libglusterfs0::
-	for f in debian/tmp/usr/lib/glusterfs/*/xlator/debug/trace.so; do \
+	for f in debian/tmp/usr/lib/glusterfs/*/xlator/debug/*.so.*; do \
 		debug_path=`echo "$$f" | sed -e 's|debian/tmp|debian/glusterfs-dbg/usr/lib/debug|'`; \
 		install -d "`dirname $$debug_path`"; \
 		objcopy --only-keep-debug "$$f" "$$debug_path"; \
 	done
 	strip --remove-section=.comment --remove-section=.note --strip-unneeded \
-		debian/tmp/usr/lib/glusterfs/*/xlator/debug/trace.so
+		debian/tmp/usr/lib/glusterfs/*/xlator/debug/*.so
 
 clean::
 	rm -rf glusterfs*.8 

@@ -1,3 +1,13 @@
+glusterfs (2.0.0rc1-1) unstable; urgency=low
+
+  * New Upstream Version, 2.0.0rc1
+  * Updated 02patch-server-vol-spec.patch to apply
+  * Removed 10add_mode_to_open.patch
+  * glusterfs-client now depends on corresponding libgluster0 version
+  * Renamed glusterfsd binary to glusterfs in glusterfs-client package
+
+ -- John Leach <john@brightbox.co.uk>  Thu, 19 Feb 2009 16:35:17 +0000
+
 glusterfs (1.3.12-1) unstable; urgency=low
 
   * new upstream release, closes: #495312 
