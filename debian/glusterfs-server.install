@@ -1,2 +1,2 @@
-debian/tmp/etc/glusterfs/glusterfs-client.vol
-debian/tmp/etc/glusterfs/glusterfs-server.vol
+debian/tmp/etc/glusterfs/glusterfs.vol
+debian/tmp/etc/glusterfs/glusterfsd.vol

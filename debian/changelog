@@ -1,3 +1,9 @@
+glusterfs (2.0.0qa16) unstable; urgency=low
+
+  * New Upstream Version, 2.0.0qa16
+
+ -- John Leach <john@brightbox.co.uk>  Thu, 19 Feb 2009 21:15:19 +0000
+
 glusterfs (2.0.0rc1-1) unstable; urgency=low
 
   * New Upstream Version, 2.0.0rc1

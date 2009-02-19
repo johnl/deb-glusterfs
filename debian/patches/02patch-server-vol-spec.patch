@@ -1,7 +1,7 @@
-diff --git a/doc/glusterfs-server.vol.sample b/doc/glusterfs-server.vol.sample
-index c900824..e668cd5 100644
---- a/doc/glusterfs-server.vol.sample
-+++ b/doc/glusterfs-server.vol.sample
+diff --git a/doc/glusterfsd.vol.sample b/doc/glusterfsd.vol.sample
+index b6d8a15..f952990 100644
+--- a/doc/glusterfsd.vol.sample
++++ b/doc/glusterfsd.vol.sample
 @@ -18,7 +18,7 @@
  ### Export volume "brick" with the contents of "/home/export" directory.
  volume brick
@@ -11,15 +11,21 @@ index c900824..e668cd5 100644
  end-volume
  
  ### Add network serving capability to above brick.
-@@ -32,9 +32,9 @@ volume server
- # option ib-verbs-work-request-send-count 64
- # option ib-verbs-work-request-recv-size  131072
- # option ib-verbs-work-request-recv-count 64
--# option bind-address 192.168.1.10     # Default is to listen on all interfaces
-+  option bind-address 127.0.0.1     # Default is to listen on all interfaces
- # option listen-port 6996              # Default is 6996
+@@ -27,7 +27,7 @@ volume server
+   option transport-type tcp
+ # option transport-type unix
+ # option transport-type ib-sdp
+-# option transport.socket.bind-address 192.168.1.10     # Default is to listen on all interfaces
++  option transport.socket.bind-address 127.0.0.1     # Default is to listen on all interfaces
+ # option transport.socket.listen-port 6996              # Default is 6996
+ 
+ # option transport-type ib-verbs
+@@ -38,7 +38,7 @@ volume server
+ # option transport.ib-verbs.work-request-recv-size  131072
+ # option transport.ib-verbs.work-request-recv-count 64
+ 
 -# option client-volume-filename /etc/glusterfs/glusterfs-client.vol
-+  option client-volume-filename /etc/glusterfs/glusterfs-client.vol
++  option client-volume-filename /etc/glusterfs/glusterfs.vol
    subvolumes brick
  # NOTE: Access to any volume through protocol/server is denied by
  # default. You need to explicitly grant access through # "auth"

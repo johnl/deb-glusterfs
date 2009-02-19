@@ -7,10 +7,10 @@ include /usr/share/cdbs/1/class/autotools.mk
 DEB_INSTALL_CHANGELOGS_ALL = debian/changelog.tla
 
 install/glusterfs-server::
-	mv debian/tmp/etc/glusterfs/glusterfs-client.vol.sample \
-	   debian/tmp/etc/glusterfs/glusterfs-client.vol
-	mv debian/tmp/etc/glusterfs/glusterfs-server.vol.sample \
-	   debian/tmp/etc/glusterfs/glusterfs-server.vol
+	mv debian/tmp/etc/glusterfs/glusterfs.vol.sample \
+	   debian/tmp/etc/glusterfs/glusterfs.vol
+	mv debian/tmp/etc/glusterfs/glusterfsd.vol.sample \
+	   debian/tmp/etc/glusterfs/glusterfsd.vol
 	ln -s glusterfs.8 debian/tmp/usr/share/man/man8/glusterfsd.8 
 
 install/glusterfs-client::
