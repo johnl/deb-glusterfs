@@ -1,3 +1,9 @@
+glusterfs (2.0.0qa17-2) unstable; urgency=low
+
+  * Improvements to gluster-server initscript. No longer kills fuse processes.
+
+ -- John Leach <john@brightbox.co.uk>  Mon, 23 Feb 2009 13:11:47 +0000
+
 glusterfs (2.0.0qa17-1) unstable; urgency=low
 
   * New Upstream Version, 2.0.0qa17
