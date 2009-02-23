@@ -1,0 +1,13 @@
+diff --git a/xlators/protocol/server/src/server-protocol.h b/xlators/protocol/server/src/server-protocol.h
+index cc5f6f9..8e528fb 100644
+--- a/xlators/protocol/server/src/server-protocol.h
++++ b/xlators/protocol/server/src/server-protocol.h
+@@ -36,7 +36,7 @@
+ #include "byte-order.h"
+ 
+ #define DEFAULT_BLOCK_SIZE     4194304   /* 4MB */
+-#define GLUSTERFSD_SPEC_PATH   CONFDIR "/glusterfs-client.vol"
++#define GLUSTERFSD_SPEC_PATH   CONFDIR "/glusterfs.vol"
+ 
+ typedef struct _server_state server_state_t;
+ 
