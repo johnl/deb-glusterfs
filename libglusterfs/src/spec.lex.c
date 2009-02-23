@@ -532,7 +532,8 @@ char *yytext;
    <http://www.gnu.org/licenses/>.
 */
 
-#line 25 "../../../libglusterfs/src/spec.l"
+#define YY_NO_INPUT 1
+#line 26 "../../../libglusterfs/src/spec.l"
 
 #define YYSTYPE char *
 #include "xlator.h"
@@ -573,7 +574,7 @@ void alloc_string(const char *str, int size)
 	text[size] = 0;
 }
 
-#line 577 "<stdout>"
+#line 578 "<stdout>"
 
 #define INITIAL 0
 #define STRING 1
@@ -761,9 +762,9 @@ YY_DECL
 	register char *yy_cp, *yy_bp;
 	register int yy_act;
     
-#line 72 "../../../libglusterfs/src/spec.l"
+#line 73 "../../../libglusterfs/src/spec.l"
 
-#line 767 "<stdout>"
+#line 768 "<stdout>"
 
 	if ( !(yy_init) )
 		{
@@ -858,53 +859,53 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 73 "../../../libglusterfs/src/spec.l"
+#line 74 "../../../libglusterfs/src/spec.l"
 ;
 	YY_BREAK
 case 2:
 YY_RULE_SETUP
-#line 74 "../../../libglusterfs/src/spec.l"
+#line 75 "../../../libglusterfs/src/spec.l"
 return SECTION_BEGIN;
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 75 "../../../libglusterfs/src/spec.l"
+#line 76 "../../../libglusterfs/src/spec.l"
 return TYPE;
 	YY_BREAK
 case 4:
 YY_RULE_SETUP
-#line 76 "../../../libglusterfs/src/spec.l"
+#line 77 "../../../libglusterfs/src/spec.l"
 return SECTION_END;
 	YY_BREAK
 case 5:
 YY_RULE_SETUP
-#line 77 "../../../libglusterfs/src/spec.l"
+#line 78 "../../../libglusterfs/src/spec.l"
 return SUBSECTION;
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 78 "../../../libglusterfs/src/spec.l"
+#line 79 "../../../libglusterfs/src/spec.l"
 return OPTION;
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 79 "../../../libglusterfs/src/spec.l"
+#line 80 "../../../libglusterfs/src/spec.l"
 BEGIN(STRING);
 	YY_BREAK
 
 case 8:
 YY_RULE_SETUP
-#line 81 "../../../libglusterfs/src/spec.l"
+#line 82 "../../../libglusterfs/src/spec.l"
 {    append_string (yytext, yyleng); }
 	YY_BREAK
 case 9:
 YY_RULE_SETUP
-#line 82 "../../../libglusterfs/src/spec.l"
+#line 83 "../../../libglusterfs/src/spec.l"
 {    append_string (yytext + 1, yyleng - 1); }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 83 "../../../libglusterfs/src/spec.l"
+#line 84 "../../../libglusterfs/src/spec.l"
 {
                        if (0) {
                               yyunput (0, NULL);
@@ -917,21 +918,21 @@ YY_RULE_SETUP
 
 case 11:
 YY_RULE_SETUP
-#line 92 "../../../libglusterfs/src/spec.l"
+#line 93 "../../../libglusterfs/src/spec.l"
 {    yylval = strdup (yytext) ; return ID; }
 	YY_BREAK
 case 12:
 /* rule 12 can match eol */
 YY_RULE_SETUP
-#line 93 "../../../libglusterfs/src/spec.l"
+#line 94 "../../../libglusterfs/src/spec.l"
 ;
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 94 "../../../libglusterfs/src/spec.l"
+#line 95 "../../../libglusterfs/src/spec.l"
 ECHO;
 	YY_BREAK
-#line 935 "<stdout>"
+#line 936 "<stdout>"
 case YY_STATE_EOF(INITIAL):
 case YY_STATE_EOF(STRING):
 	yyterminate();
@@ -1942,7 +1943,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 94 "../../../libglusterfs/src/spec.l"
+#line 95 "../../../libglusterfs/src/spec.l"
 
 
 
